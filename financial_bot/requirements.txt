@@ -1,0 +1,14 @@
+langchain
+langchain-chroma
+langchain-groq
+langchain-google-genai
+langchain-community
+chromadb
+pypdf
+unstructured
+pandas
+openpyxl
+Flask
+Flask-CORS
+python-dotenv
+Markdown

@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  financial-bot:
+    build: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./data:/app/data
+      - ./vector_store:/app/vector_store
+      - ./.env:/app/.env
+    environment:
+      - PYTHONUNBUFFERED=1
