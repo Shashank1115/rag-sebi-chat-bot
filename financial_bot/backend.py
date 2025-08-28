@@ -121,10 +121,12 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import tempfile
 from markdown import markdown
 
+# --- Initializations ---
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# --- Global Variables ---
 llm = None
 embeddings = None
 db = None
@@ -135,6 +137,7 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 VECTOR_STORE_PATH = os.path.join(basedir, "vector_store")
 
 def initialize_app():
+    """Loads all models and initializes prompts."""
     global llm, embeddings, db, qa_prompt, analysis_prompt
     print("--- STARTING INITIALIZATION ---")
     try:
@@ -165,6 +168,8 @@ def initialize_app():
         print(f"--- FATAL ERROR DURING INITIALIZATION ---\n{traceback.format_exc()}")
         return False
 
+# --- Flask Routes ---
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -187,9 +192,9 @@ def ask():
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    if 'portfolioFile' not in request.files: return "No file part", 400
+    if 'portfolioFile' not in request.files: return jsonify({'error': 'No file part'}), 400
     file = request.files['portfolioFile']
-    if file.filename == '': return "No selected file", 400
+    if file.filename == '': return jsonify({'error': 'No selected file'}), 400
 
     if file:
         tmp_path = ""
@@ -202,24 +207,32 @@ def analyze():
             elif tmp_path.endswith(('.xlsx', '.xls')): df = pd.read_excel(tmp_path)
             else:
                 os.remove(tmp_path)
-                return "Unsupported file format", 400
+                return jsonify({'error': 'Unsupported file format'}), 400
 
+            # Calculate investment value for the chart
             df['Investment Value'] = df['Quantity'] * df['Current Price']
             sector_allocation = df.groupby('Sector')['Investment Value'].sum().round(2).to_dict()
+            
+            # Prepare data for the LLM
             portfolio_string = df.to_string()
             
             formatted_prompt = analysis_prompt.format(portfolio_data=portfolio_string)
             result = llm.invoke(formatted_prompt)
-            analysis_html = markdown(result.content)
+            analysis_markdown = result.content
 
-            return render_template('portfolio.html', analysis_html=analysis_html, chart_data=sector_allocation)
+            # Return all necessary data as a single JSON object
+            return jsonify({
+                'analysis_markdown': analysis_markdown,
+                'chart_data': sector_allocation
+            })
+            
         except Exception as e:
             print(f"--- AN ERROR OCCURRED DURING ANALYSIS ---\n{traceback.format_exc()}")
-            return "An error occurred during analysis.", 500
+            return jsonify({'error': 'An error occurred during analysis.'}), 500
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
-    return "File processing failed.", 500
+    return jsonify({'error': 'File processing failed.'}), 500
 
 if __name__ == '__main__':
     if initialize_app():

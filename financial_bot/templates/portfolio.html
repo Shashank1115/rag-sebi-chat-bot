@@ -5,16 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portfolio Analysis - SEBI Saathi</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chart.js script has been removed -->
     <style>
         body { font-family: 'Inter', sans-serif; }
         .analysis-section {
-            background-color: #f9fafb;
-            border: 1px solid #e5e7eb;
-            padding: 1.5rem;
-            border-radius: 0.75rem;
-            margin-bottom: 1.5rem;
+            background-color: #f9fafb; /* bg-gray-50 */
+            border: 1px solid #e5e7eb; /* border-gray-200 */
+            padding: 1.5rem; /* p-6 */
+            border-radius: 0.75rem; /* rounded-xl */
+            margin-bottom: 1.5rem; /* mb-6 */
         }
+        /* Added styles for better text formatting from Markdown */
+        #analysis-text h1, #analysis-text h2, #analysis-text h3 { font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; }
+        #analysis-text ul { list-style-type: disc; padding-left: 1.5rem; }
+        #analysis-text li { margin-bottom: 0.25rem; }
+        #analysis-text p { margin-bottom: 0.75rem; }
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,20 +27,21 @@
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto p-4 sm:p-6 lg:p-8">
-        <div class="w-full max-w-4xl mx-auto bg-white rounded-2xl shadow-2xl p-6">
+        <div class="w-full max-w-2xl mx-auto bg-white rounded-2xl shadow-2xl p-6">
             <div class="border-b pb-4 mb-6">
                 <h1 class="text-3xl font-bold text-gray-800 text-center">SEBI Saathi 🇮🇳</h1>
                 <p class="text-center text-gray-500">Portfolio Health Check</p>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="analysis-section">
-                    <h2 class="text-2xl font-semibold text-gray-700 mb-4">Sector Allocation</h2>
-                    <canvas id="portfolioChart"></canvas>
-                </div>
+            <!-- The grid layout has been removed for a single column layout -->
+            <div>
+                <!-- The Pie Chart Section has been completely removed -->
+
+                <!-- Analysis Text Section now takes up the full width -->
                 <div class="analysis-section">
                     <h2 class="text-2xl font-semibold text-gray-700 mb-4">AI-Powered Analysis</h2>
                     <div id="analysis-text" class="text-gray-600 space-y-4">
+                        <!-- The analysis from the backend will be inserted here -->
                         {{ analysis_html|safe }}
                     </div>
                 </div>
@@ -46,59 +52,6 @@
         </div>
     </div>
 
-    <!-- Safely pass data from Flask to JavaScript -->
-    <script id="chart-data-json" type="application/json">
-        {{ chart_data|tojson|safe }}
-    </script>
-
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const chartDataElement = document.getElementById('chart-data-json');
-            const chartContainer = document.getElementById('portfolioChart').parentElement;
-
-            try {
-                const chartData = JSON.parse(chartDataElement.textContent);
-
-                if (chartData && Object.keys(chartData).length > 0) {
-                    const ctx = document.getElementById('portfolioChart').getContext('2d');
-                    new Chart(ctx, {
-                        type: 'pie',
-                        data: {
-                            labels: Object.keys(chartData),
-                            datasets: [{
-                                label: 'Investment Value',
-                                data: Object.values(chartData),
-                                backgroundColor: ['#4F46E5', '#7C3AED', '#EC4899', '#F59E0B', '#10B981', '#3B82F6'],
-                                hoverOffset: 4
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            plugins: {
-                                legend: { position: 'top' },
-                                tooltip: {
-                                    callbacks: {
-                                        label: function(context) {
-                                            let label = context.label || '';
-                                            if (label) { label += ': '; }
-                                            if (context.parsed !== null) {
-                                                label += new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(context.parsed);
-                                            }
-                                            return label;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                } else {
-                    chartContainer.innerHTML = '<p class="text-gray-500">No portfolio data available to display a chart.</p>';
-                }
-            } catch (e) {
-                console.error("Could not parse chart data or render chart:", e);
-                chartContainer.innerHTML = '<p class="text-red-500">Could not render portfolio chart due to a data error.</p>';
-            }
-        });
-    </script>
+    <!-- The entire script for rendering the chart has been removed -->
 </body>
 </html>
