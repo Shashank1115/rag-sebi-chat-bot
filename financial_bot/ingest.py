@@ -13,9 +13,15 @@ from langchain_chroma import Chroma
 load_dotenv()
 
 VECTOR_STORE_PATH = "vector_store"
-DATA_PATH = "data"
+# --- THIS IS THE CHANGE ---
+# We now point specifically to the subfolder for RAG documents
+DATA_PATH = "data/rag_sources"
 
 def create_vector_db():
+    if not os.path.exists(DATA_PATH):
+        print(f"Data directory '{DATA_PATH}' not found. Please create it and add your documents.")
+        return
+
     loaders = [
         DirectoryLoader(DATA_PATH, glob="**/*.pdf", loader_cls=PyPDFLoader, show_progress=True),
         DirectoryLoader(DATA_PATH, glob="**/*.txt", loader_cls=TextLoader, show_progress=True),
@@ -27,14 +33,14 @@ def create_vector_db():
         try:
             loaded_documents.extend(loader.load())
         except Exception as e:
-            print(f"Error loading files with {loader.__class__.__name__}: {e}")
+            print(f"Error loading files: {e}")
             continue
 
     if not loaded_documents:
-        print("No documents found in the data directory.")
+        print(f"No documents found in '{DATA_PATH}'.")
         return
 
-    print(f"Loaded {len(loaded_documents)} document(s).")
+    print(f"Loaded {len(loaded_documents)} document(s) from '{DATA_PATH}'.")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     texts = text_splitter.split_documents(loaded_documents)
     print(f"Split into {len(texts)} chunks.")
@@ -45,7 +51,7 @@ def create_vector_db():
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 
-    print(f"Creating vector store with {len(texts)} chunks. This may take a few minutes...")
+    print(f"Creating vector store...")
     db = Chroma.from_documents(texts, embeddings, persist_directory=VECTOR_STORE_PATH)
     print(f"Vector store created and saved at: {VECTOR_STORE_PATH}")
 

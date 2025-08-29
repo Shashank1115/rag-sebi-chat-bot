@@ -1,0 +1,22 @@
+[
+    {
+        "statement": "You need a lot of money to start investing in the stock market.",
+        "type": "Myth",
+        "explanation": "This is a common myth. You can start investing with as little as a few hundred rupees through Systematic Investment Plans (SIPs) in mutual funds or by buying single shares of smaller companies."
+    },
+    {
+        "statement": "Investing in the stock market is just like gambling.",
+        "type": "Myth",
+        "explanation": "Gambling is based on random chance. Investing, when done with research and a long-term strategy, is based on the analysis of a company's performance and economic trends. While there are risks, it is not pure chance."
+    },
+    {
+        "statement": "A stock that has gone up a lot is bound to come down.",
+        "type": "Myth",
+        "explanation": "Not necessarily. A stock's price is driven by the company's performance and future prospects. A well-performing company's stock can continue to rise for a long time. This is known as 'momentum'."
+    },
+    {
+        "statement": "SEBI is the primary regulator for the Indian securities market.",
+        "type": "Fact",
+        "explanation": "This is a fact. The Securities and Exchange Board of India (SEBI) is the statutory regulatory body responsible for protecting the interests of investors and regulating the capital markets in India."
+    }
+]

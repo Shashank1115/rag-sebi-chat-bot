@@ -1,0 +1,22 @@
+[
+  {
+    "message": "🚀 GUARANTEED 25% PROFIT IN 1 DAY! 🚀 Join our exclusive WhatsApp group for a secret stock tip on a new pharma company. Limited spots! Don't miss out on this once-in-a-lifetime opportunity!",
+    "type": "scam",
+    "explanation": "This is a classic 'pump and dump' scam. The promise of 'guaranteed' high returns in a short period is a major red flag. SEBI warns that legitimate advisors never guarantee profits."
+  },
+  {
+    "message": "Dear Investor, your account statement for August 2025 is now available for download from your registered email. Please verify your trades. - Your Stock Broker",
+    "type": "legit",
+    "explanation": "This is a legitimate notification. Brokers are required to send periodic account statements. It doesn't ask for personal information or promise returns."
+  },
+  {
+    "message": "URGENT: Your demat account has been flagged for suspicious activity. To prevent suspension, please verify your identity immediately by entering your PAN and password at this link: bit.ly/secure-demat-verify",
+    "type": "scam",
+    "explanation": "This is a phishing scam. The urgent tone and the request for sensitive information via a shortened, unofficial link are major red flags. Your broker or depository will never ask for your password via a link."
+  },
+  {
+    "message": "The IPO for 'Navo Renewables Ltd.' opens on Sept 5th. The price band is set at ₹210-₹225 per share. You can apply via your banking app or broker's portal.",
+    "type": "legit",
+    "explanation": "This is a legitimate informational message. It provides factual details about an upcoming IPO and directs you to official channels for application, without promising any gains."
+  }
+]
