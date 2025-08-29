@@ -8,5 +8,6 @@ services:
       - ./data:/app/data
       - ./vector_store:/app/vector_store
       - ./.env:/app/.env
+      - ./user_data:/app/user_data
     environment:
       - PYTHONUNBUFFERED=1
