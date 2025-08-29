@@ -1,172 +1,63 @@
-# import os
-# import traceback
-# from dotenv import load_dotenv
-# from langchain_chroma import Chroma
-# from langchain.prompts import PromptTemplate
-# from langchain_groq import ChatGroq
-# from langchain_google_genai import GoogleGenerativeAIEmbeddings
-# from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader, TextLoader, CSVLoader
-# from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# # Load environment variables from the .env file you uploaded
-# load_dotenv()
-# print("API Keys loaded.")
-
-# # ==============================================================================
-# # Step 3: Build the Vector Database (This runs only once)
-# # ==============================================================================
-# VECTOR_STORE_PATH = "vector_store"
-# DATA_PATH = "data" # The folder you created and uploaded your documents to
-
-# def create_vector_db():
-#     print("\n--- Building Vector Database ---")
-#     if os.path.exists(VECTOR_STORE_PATH):
-#         print("Vector store already exists. Loading...")
-#         return
-        
-#     loaders = [
-#         DirectoryLoader(DATA_PATH, glob="**/*.pdf", loader_cls=PyPDFLoader, show_progress=True),
-#         DirectoryLoader(DATA_PATH, glob="**/*.txt", loader_cls=TextLoader, show_progress=True),
-#         DirectoryLoader(DATA_PATH, glob="**/*.csv", loader_cls=CSVLoader, show_progress=True, loader_kwargs={'encoding': 'utf8'}),
-#     ]
-    
-#     loaded_documents = []
-#     for loader in loaders:
-#         try:
-#             loaded_documents.extend(loader.load())
-#         except Exception as e:
-#             print(f"Error loading files with {loader.__class__.__name__}: {e}")
-#             continue
-
-#     if not loaded_documents:
-#         print("No documents found in the data directory.")
-#         return
-
-#     print(f"Loaded {len(loaded_documents)} document(s).")
-#     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-#     texts = text_splitter.split_documents(loaded_documents)
-#     print(f"Split into {len(texts)} chunks.")
-
-#     print("Initializing Google Embeddings...")
-#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
-
-#     print(f"Creating vector store with {len(texts)} chunks. This may take a few minutes...")
-#     db = Chroma.from_documents(texts, embeddings, persist_directory=VECTOR_STORE_PATH)
-#     print(f"Vector store created and saved at: {VECTOR_STORE_PATH}")
-
-# # Run the database creation function
-# create_vector_db()
-
-# # ==============================================================================
-# # Step 4: Load the RAG components for the chatbot
-# # ==============================================================================
-# print("\n--- Initializing Chatbot ---")
-# try:
-#     llm = ChatGroq(temperature=0, model_name="llama3-8b-8192", api_key=os.getenv("GROQ_API_KEY"))
-#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
-#     db = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
-    
-#     qa_prompt_template = """
-#     You are a helpful Financial Assistant. Use the following pieces of context to answer the question at the end. If you don't know the answer from the context, just say that you don't know.
-#     CONTEXT: {context}
-#     QUESTION: {question}
-#     ANSWER:
-#     """
-#     qa_prompt = PromptTemplate(template=qa_prompt_template, input_variables=["context", "question"])
-    
-#     print("Chatbot initialized successfully.")
-# except Exception as e:
-#     print("--- FATAL ERROR DURING INITIALIZATION ---")
-#     print(traceback.format_exc())
-
-# # ==============================================================================
-# # Step 5: Define the chat function and run the chat loop
-# # ==============================================================================
-# def ask_question(question):
-#     """The core RAG logic for answering a question."""
-#     try:
-#         retriever = db.as_retriever(search_kwargs={"k": 3})
-#         docs = retriever.invoke(question)
-#         context = "\n\n".join([doc.page_content for doc in docs])
-#         formatted_prompt = qa_prompt.format(context=context, question=question)
-#         result = llm.invoke(formatted_prompt)
-#         return result.content
-#     except Exception as e:
-#         print(traceback.format_exc())
-#         return "Sorry, an error occurred while processing your question."
-
-# print("\n--- SEBI Saathi is Ready ---")
-# print("Ask any question about Indian finance. Type 'exit' to quit.")
-
-# while True:
-#     user_question = input("\nYour question: ")
-#     if user_question.lower() == 'exit':
-#         print("Goodbye!")
-#         break
-#     if user_question:
-#         answer = ask_question(user_question)
-#         print("\nAnswer:")
-#         print(answer)
-
 import os
 import pandas as pd
 import traceback
 import json
 import random
-from dotenv import load_dotenv
-from flask import Flask, request, jsonify, render_template
+import shutil
+from flask import Flask, request, jsonify, render_template, session
 from flask_cors import CORS
 from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 import tempfile
 from markdown import markdown
 
 # --- Initializations ---
+from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
+app.secret_key = os.urandom(24)
 CORS(app)
 
-# --- Global Variables ---
+# --- Global Variables & Paths ---
 llm = None
 embeddings = None
-db = None
+db_main = None
 qa_prompt = None
 analysis_prompt = None
 scam_data = []
 myth_data = []
 
 basedir = os.path.abspath(os.path.dirname(__file__))
-VECTOR_STORE_PATH = os.path.join(basedir, "vector_store")
-# --- THIS PATH IS CORRECT ---
-# It looks in the main data folder for the JSON files
+VECTOR_STORE_PATH_MAIN = os.path.join(basedir, "vector_store")
+USER_DATA_PATH = os.path.join(basedir, "user_data")
 DATA_PATH = os.path.join(basedir, "data")
+
 
 def initialize_app():
     """Loads all models, data, and initializes prompts."""
-    global llm, embeddings, db, qa_prompt, analysis_prompt, scam_data, myth_data
+    global llm, embeddings, db_main, qa_prompt, analysis_prompt, scam_data, myth_data
     print("--- STARTING INITIALIZATION ---")
     try:
         llm = ChatGroq(temperature=0, model_name="llama3-8b-8192", api_key=os.getenv("GROQ_API_KEY"))
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
-        db = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
-        print("Models and vector store loaded successfully.")
-
-        # Load engagement data from the main 'data' folder
-        with open(os.path.join(DATA_PATH, 'scam_examples.json'), 'r') as f:
-            scam_data = json.load(f)
-        with open(os.path.join(DATA_PATH, 'myths.json'), 'r') as f:
-            myth_data = json.load(f)
+        db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
+        print("Models and MAIN vector store loaded successfully.")
+        
+        with open(os.path.join(DATA_PATH, 'scam_examples.json'), 'r') as f: scam_data = json.load(f)
+        with open(os.path.join(DATA_PATH, 'myths.json'), 'r') as f: myth_data = json.load(f)
         print("Engagement data loaded successfully.")
 
-        # Prompts
-        qa_prompt_template = "CONTEXT: {context}\nQUESTION: {question}\nINSTRUCTIONS: Based only on the context, answer the user's question. If the answer is not in the context, say so."
+        qa_prompt_template = "CONTEXT: {context}\nQUESTION: {question}\nINSTRUCTIONS: Based ONLY on the context, answer the user's question. If the answer is not in the context, say so."
         qa_prompt = PromptTemplate(template=qa_prompt_template, input_variables=["context", "question"])
-
+        
         analysis_prompt_template = "You are 'SEBI Saathi', an expert portfolio analyst. Analyze the user's portfolio based on the data provided. Provide a 'Portfolio Health Check' as Markdown. Do NOT give investment advice.\nUSER'S PORTFOLIO DATA:\n{portfolio_data}\nANALYSIS:"
         analysis_prompt = PromptTemplate(template=analysis_prompt_template, input_variables=["portfolio_data"])
         
+        os.makedirs(USER_DATA_PATH, exist_ok=True)
         print("Prompts initialized successfully.")
         return True
     except Exception as e:
@@ -174,58 +65,149 @@ def initialize_app():
         return False
 
 # --- Flask Routes ---
-# (The rest of your backend.py file remains the same)
-# ...
 
 @app.route('/')
 def index():
+    if 'user_id' not in session:
+        session['user_id'] = os.urandom(8).hex()
     return render_template('index.html')
 
 @app.route('/ask', methods=['POST'])
 def ask():
-    # ... (code remains the same)
     data = request.get_json()
     question = data.get('question')
+    search_scope = data.get('scope', 'all')
+    user_id = session.get('user_id')
+    
     try:
-        docs = db.similarity_search(question, k=4)
+        docs = []
+        user_vector_store_path = os.path.join(USER_DATA_PATH, user_id, "vector_store")
+
+        if search_scope == 'user_only' and os.path.exists(user_vector_store_path):
+            db_user = Chroma(persist_directory=user_vector_store_path, embedding_function=embeddings)
+            docs = db_user.similarity_search(question, k=4)
+        else:
+            docs = db_main.similarity_search(question, k=4)
+
         context = "\n\n".join([doc.page_content for doc in docs])
+        if not context.strip():
+            context = "No relevant information was found in the selected knowledge base."
+
         formatted_prompt = qa_prompt.format(context=context, question=question)
         result = llm.invoke(formatted_prompt)
         return jsonify({'answer': result.content})
     except Exception as e:
+        print(f"--- AN ERROR OCCURRED IN /ask ---\n{traceback.format_exc()}")
         return jsonify({'error': 'A server error occurred.'}), 500
+
+@app.route('/upload_and_ingest', methods=['POST'])
+def upload_and_ingest():
+    file = request.files.get('userFile')
+    user_id = session.get('user_id')
+    if not all([file, user_id]): return jsonify({'error': 'Missing file or user session'}), 400
+
+    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
+    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id, "vector_store")
+    os.makedirs(user_docs_path, exist_ok=True)
+    
+    file_path = os.path.join(user_docs_path, file.filename)
+    file.save(file_path)
+
+    try:
+        if os.path.exists(user_vector_store_path): shutil.rmtree(user_vector_store_path)
+        loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
+        documents = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+        texts = text_splitter.split_documents(documents)
+        Chroma.from_documents(texts, embeddings, persist_directory=user_vector_store_path)
+        return jsonify({'success': True, 'user_library': os.listdir(user_docs_path)})
+    except Exception as e:
+        print(f"--- AN ERROR OCCURRED DURING USER INGESTION ---\n{traceback.format_exc()}")
+        return jsonify({'error': 'Failed to process the document.'}), 500
+
+@app.route('/delete_user_file', methods=['POST'])
+def delete_user_file():
+    data = request.get_json()
+    filename = data.get('filename')
+    user_id = session.get('user_id')
+    if not all([filename, user_id]): return jsonify({'error': 'Missing filename or user session'}), 400
+
+    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
+    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id, "vector_store")
+    file_to_delete = os.path.join(user_docs_path, filename)
+
+    try:
+        if os.path.exists(file_to_delete):
+            os.remove(file_to_delete)
+            if os.path.exists(user_vector_store_path): shutil.rmtree(user_vector_store_path)
+            
+            remaining_files = os.listdir(user_docs_path)
+            if remaining_files:
+                loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
+                documents = loader.load()
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+                texts = text_splitter.split_documents(documents)
+                Chroma.from_documents(texts, embeddings, persist_directory=user_vector_store_path)
+            return jsonify({'success': True, 'user_library': remaining_files})
+        else:
+            return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        return jsonify({'error': 'Failed to delete file.'}), 500
+
+@app.route('/get_user_library', methods=['GET'])
+def get_user_library():
+    user_id = session.get('user_id')
+    if not user_id: return jsonify({'user_library': []})
+    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
+    if os.path.exists(user_docs_path):
+        return jsonify({'user_library': os.listdir(user_docs_path)})
+    return jsonify({'user_library': []})
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    # ... (code remains the same)
-    file = request.files.get('portfolioFile')
-    if not file: return "No file part", 400
-    # ... (rest of the function)
-    df = pd.read_csv(file) # Simplified for brevity
-    df['Investment Value'] = df['Quantity'] * df['Current Price']
-    sector_allocation = df.groupby('Sector')['Investment Value'].sum().round(2).to_dict()
-    portfolio_string = df.to_string()
-    formatted_prompt = analysis_prompt.format(portfolio_data=portfolio_string)
-    result = llm.invoke(formatted_prompt)
-    analysis_html = markdown(result.content)
-    return render_template('portfolio.html', analysis_html=analysis_html, chart_data=sector_allocation)
+    if 'portfolioFile' not in request.files: return jsonify({'error': 'No file part'}), 400
+    file = request.files['portfolioFile']
+    if file.filename == '': return jsonify({'error': 'No selected file'}), 400
 
-# --- NEW ENGAGEMENT ROUTES ---
+    if file:
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+                file.save(tmp.name)
+                tmp_path = tmp.name
 
+            if tmp_path.endswith('.csv'): df = pd.read_csv(tmp_path)
+            elif tmp_path.endswith(('.xlsx', '.xls')): df = pd.read_excel(tmp_path)
+            else:
+                os.remove(tmp_path)
+                return jsonify({'error': 'Unsupported file format'}), 400
+
+            df['Investment Value'] = df['Quantity'] * df['Current Price']
+            sector_allocation = df.groupby('Sector')['Investment Value'].sum().round(2).to_dict()
+            portfolio_string = df.to_string()
+            
+            formatted_prompt = analysis_prompt.format(portfolio_data=portfolio_string)
+            result = llm.invoke(formatted_prompt)
+            analysis_markdown = result.content
+
+            return jsonify({'analysis_markdown': analysis_markdown, 'chart_data': sector_allocation})
+            
+        except Exception as e:
+            print(f"--- AN ERROR OCCURRED DURING ANALYSIS ---\n{traceback.format_exc()}")
+            return jsonify({'error': 'An error occurred during analysis.'}), 500
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    return jsonify({'error': 'File processing failed.'}), 500
+
+# --- Engagement Routes ---
 @app.route('/quiz/next_question', methods=['GET'])
 def next_quiz_question():
-    if not scam_data:
-        return jsonify({'error': 'Scam data not loaded'}), 500
-    question = random.choice(scam_data)
-    # Return the full object so the frontend can check the answer
-    return jsonify(question)
+    return jsonify(random.choice(scam_data))
 
 @app.route('/get_myth', methods=['GET'])
 def get_myth():
-    if not myth_data:
-        return jsonify({'error': 'Myth data not loaded'}), 500
-    myth = random.choice(myth_data)
-    return jsonify(myth)
+    return jsonify(random.choice(myth_data))
 
 @app.route('/calculate_sip', methods=['POST'])
 def calculate_sip():
@@ -233,29 +215,20 @@ def calculate_sip():
     try:
         future_value = float(data['amount'])
         years = float(data['years'])
-        rate_of_return = float(data.get('rate', 12)) / 100 # Default 12% annual return
-        
-        # SIP formula
-        i = rate_of_return / 12
+        rate = float(data.get('rate', 12)) / 100
+        i = rate / 12
         n = years * 12
-        sip = future_value * (i / ((1 + i)**n - 1))
+        if i == 0: sip = future_value / n if n > 0 else 0
+        else: sip = future_value * (i / ((1 + i)**n - 1))
         
-        # Calculate year-by-year growth
         growth_data = []
-        invested_amount = 0
         for year in range(1, int(years) + 1):
-            invested_amount = sip * 12 * year
-            # Simplified future value calculation for chart
-            current_value = sip * (((1 + i)**(year*12) - 1) / i) * (1 + i)
-            growth_data.append({'year': year, 'invested': round(invested_amount), 'value': round(current_value)})
-
-        return jsonify({
-            'monthly_sip': round(sip, 2),
-            'growth_data': growth_data
-        })
-    except (ValueError, KeyError, ZeroDivisionError) as e:
-        return jsonify({'error': f'Invalid input for calculation. {e}'}), 400
-
+            invested = sip * 12 * year
+            value = sip * (((1 + i)**(year*12) - 1) / i) * (1 + i) if i > 0 else invested
+            growth_data.append({'year': year, 'invested': round(invested), 'value': round(value)})
+        return jsonify({'monthly_sip': round(sip, 2), 'growth_data': growth_data})
+    except Exception as e:
+        return jsonify({'error': f'Invalid input. {e}'}), 400
 
 if __name__ == '__main__':
     if initialize_app():
