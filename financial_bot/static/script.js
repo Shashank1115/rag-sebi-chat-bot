@@ -48,6 +48,42 @@ document.addEventListener('DOMContentLoaded', () => {
     const nextMythBtn = document.getElementById('next-myth-btn');
     let currentMyth = null;
 
+    // Sources (RAG) UI - created dynamically to avoid HTML edits
+    const ensureSourcesUI = () => {
+        // Add Sources button next to existing buttons
+        const buttonsBar = scamQuizBtn ? scamQuizBtn.parentElement : null;
+        if (buttonsBar && !document.getElementById('sources-btn')) {
+            const sourcesBtn = document.createElement('button');
+            sourcesBtn.id = 'sources-btn';
+            sourcesBtn.className = 'bg-indigo-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-600 text-sm';
+            sourcesBtn.textContent = 'Sources';
+            buttonsBar.appendChild(sourcesBtn);
+        }
+
+        // Add modal if not present
+        if (!document.getElementById('sources-modal')) {
+            const modal = document.createElement('div');
+            modal.id = 'sources-modal';
+            modal.className = 'modal fixed inset-0 bg-gray-800 bg-opacity-75 items-center justify-center';
+            modal.innerHTML = `
+                <div class="bg-white rounded-lg p-8 max-w-xl w-full">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-2xl font-bold">Knowledge Sources</h2>
+                        <button id="close-sources-modal" class="text-gray-600 hover:text-gray-900">Close</button>
+                    </div>
+                    <p class="text-sm text-gray-500 mb-3">These files (PDF/TXT/CSV) are indexed under data/rag_sources and used to answer questions.</p>
+                    <div id="sources-list" class="space-y-2 max-h-80 overflow-y-auto"></div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+    };
+
+    // // --- Core Chat Functions ---
+    // const addMessage = (sender, message) => { /* ... same as before ... */ };
+    // const handleSend = async () => { /* ... same as before ... */ };
+    // const handleFileUpload = () => { /* ... same as before ... */ };
+
 
     const addMessage = (sender, message, isHtml = false) => {
         const messageWrapper = document.createElement('div');
@@ -347,4 +383,66 @@ document.addEventListener('DOMContentLoaded', () => {
     nextMythBtn.addEventListener('click', loadMyth);
     mythChoiceBtn.addEventListener('click', () => checkMythAnswer('Myth'));
     factChoiceBtn.addEventListener('click', () => checkMythAnswer('Fact'));
+
+
+    // --- Sources (RAG) Logic ---
+    ensureSourcesUI();
+    const sourcesBtn = document.getElementById('sources-btn');
+    const sourcesModal = document.getElementById('sources-modal');
+    const closeSourcesModalBtn = document.getElementById('close-sources-modal');
+    const sourcesListEl = document.getElementById('sources-list');
+
+    const loadSources = async () => {
+        if (!sourcesListEl) return;
+        sourcesListEl.innerHTML = '<div class="text-gray-500">Loading…</div>';
+        try {
+            const resp = await fetch('/sources');
+            const data = await resp.json();
+            if (!data.sources || data.sources.length === 0) {
+                sourcesListEl.innerHTML = '<div class="text-gray-500">No PDF sources found.</div>';
+                return;
+            }
+            sourcesListEl.innerHTML = '';
+            data.sources.forEach(src => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center justify-between p-2 border rounded';
+                const name = document.createElement('div');
+                name.className = 'text-sm truncate pr-3';
+                name.textContent = src.name;
+                // Choose label based on extension
+                const ext = (src.name.split('.').pop() || '').toLowerCase();
+                const link = document.createElement('a');
+                link.href = src.url;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.className = 'text-indigo-600 hover:underline text-sm flex-shrink-0';
+                link.textContent = ext === 'pdf' ? 'Open' : 'View';
+                row.appendChild(name);
+                row.appendChild(link);
+                sourcesListEl.appendChild(row);
+            });
+        } catch (e) {
+            sourcesListEl.innerHTML = '<div class="text-red-600">Failed to load sources.</div>';
+        }
+    };
+
+    if (sourcesBtn && sourcesModal && closeSourcesModalBtn) {
+        sourcesBtn.addEventListener('click', () => {
+            sourcesModal.classList.add('active');
+            loadSources();
+        });
+        closeSourcesModalBtn.addEventListener('click', () => sourcesModal.classList.remove('active'));
+    }
+
+    // Re-add main chat event listeners
+    sendBtn.addEventListener('click', handleSend);
+    userInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSend(); });
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files[0]) {
+            addMessage('user', `Analyzing file: ${fileInput.files[0].name}`);
+            uploadForm.submit();
+        }
+    });
+
 });

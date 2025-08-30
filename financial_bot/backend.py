@@ -3,8 +3,10 @@ import pandas as pd
 import traceback
 import json
 import random
-import shutil
-from flask import Flask, request, jsonify, render_template, session
+
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, render_template, send_from_directory
+
 from flask_cors import CORS
 from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate
@@ -35,6 +37,7 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 VECTOR_STORE_PATH_MAIN = os.path.join(basedir, "vector_store")
 USER_DATA_PATH = os.path.join(basedir, "user_data")
 DATA_PATH = os.path.join(basedir, "data")
+RAG_SOURCES_PATH = os.path.join(DATA_PATH, "rag_sources")
 
 
 def initialize_app():
@@ -229,6 +232,46 @@ def calculate_sip():
         return jsonify({'monthly_sip': round(sip, 2), 'growth_data': growth_data})
     except Exception as e:
         return jsonify({'error': f'Invalid input. {e}'}), 400
+
+# --- Sources (RAG) Routes ---
+@app.route('/sources', methods=['GET'])
+def list_sources():
+    """Return a list of source files (PDF/TXT/CSV) from data/rag_sources."""
+    try:
+        if not os.path.isdir(RAG_SOURCES_PATH):
+            return jsonify({
+                'sources': [],
+                'error': 'rag_sources directory not found'
+            }), 200
+
+        allowed_exts = {'.pdf', '.txt', '.csv'}
+        files = []
+        for entry in os.listdir(RAG_SOURCES_PATH):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in allowed_exts:
+                files.append({
+                    'name': entry,
+                    'url': f"/source_files/{entry}"
+                })
+        # Sort by name for stable order
+        files.sort(key=lambda x: x['name'].lower())
+        return jsonify({'sources': files})
+    except Exception as e:
+        return jsonify({'sources': [], 'error': str(e)}), 500
+
+
+@app.route('/source_files/<path:filename>', methods=['GET'])
+def serve_source_file(filename):
+    """Serve a source file from data/rag_sources securely (PDF/TXT/CSV only)."""
+    allowed_exts = {'.pdf', '.txt', '.csv'}
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed_exts:
+        return jsonify({'error': 'Only PDF, TXT, or CSV files are allowed.'}), 400
+    try:
+        return send_from_directory(RAG_SOURCES_PATH, filename, as_attachment=False)
+    except FileNotFoundError:
+        return jsonify({'error': 'File not found'}), 404
+
 
 if __name__ == '__main__':
     if initialize_app():
