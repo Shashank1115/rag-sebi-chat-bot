@@ -9,5 +9,8 @@ services:
       - ./vector_store:/app/vector_store
       - ./.env:/app/.env
       - ./user_data:/app/user_data
+      # 👇 Add these two lines for live frontend reload
+      - ./templates:/app/templates
+      - ./static:/app/static
     environment:
       - PYTHONUNBUFFERED=1

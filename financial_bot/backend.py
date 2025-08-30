@@ -3,7 +3,7 @@ import pandas as pd
 import traceback
 import json
 import random
-
+import yfinance as yf
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template, send_from_directory, session
 
@@ -40,6 +40,8 @@ DATA_PATH = os.path.join(basedir, "data")
 RAG_SOURCES_PATH = os.path.join(DATA_PATH, "rag_sources")
 
 
+
+
 def initialize_app():
     """Loads all models, data, and initializes prompts."""
     global llm, embeddings, db_main, qa_prompt, analysis_prompt, scam_data, myth_data
@@ -68,6 +70,24 @@ def initialize_app():
         return False
 
 # --- Flask Routes ---
+
+
+@app.route('/market/live')
+def market_live():
+    try:
+        tickers = {
+            "NIFTY 50": "^NSEI",
+            "SENSEX": "^BSESN",
+            "RELIANCE": "RELIANCE.NS"
+        }
+        data = {}
+        for name, symbol in tickers.items():
+            ticker = yf.Ticker(symbol)
+            price = ticker.history(period="1d")['Close'][-1]
+            data[name] = round(float(price), 2)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route('/')
 def index():
@@ -279,3 +299,4 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)
     else:
         print("Could not start Flask server due to initialization errors.")
+

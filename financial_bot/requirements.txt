@@ -12,3 +12,4 @@ Flask
 Flask-CORS
 python-dotenv
 Markdown
+yfinance>=0.2.40

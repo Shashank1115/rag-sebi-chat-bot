@@ -1,130 +1,147 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SEBI Saathi - Financial Copilot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: 'Inter', sans-serif; overflow: hidden; }
-        #main-container { height: 95vh; max-height: 95vh; }
-        #chat-container { overflow-y: auto; min-height: 0; }
-        .user-msg { justify-content: flex-end; }
-        .bot-msg { justify-content: flex-start; }
-        .modal { display: none; }
-        .modal.active { display: flex; }
-        .delete-btn { cursor: pointer; font-weight: bold; color: #ef4444; margin-left: auto; padding: 0 8px; }
-        .delete-btn:hover { color: #b91c1c; }
-    </style>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SEBI Saathi - Financial Copilot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .chat-bubble { max-width: 75%; padding: 0.75rem 1rem; border-radius: 1rem; word-wrap: break-word; }
+    .modal { display: none; }
+    .modal.active { display: flex; }
+  </style>
 </head>
-<body class="bg-gray-100">
+<body class="h-screen overflow-hidden bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100">
 
-    <div class="flex h-screen">
-        <!-- Sidebar for User Library -->
-        <aside class="w-64 bg-gray-800 text-white p-4 flex flex-col flex-shrink-0">
-            <h2 class="text-xl font-bold mb-4 border-b border-gray-600 pb-2">📚 My Library</h2>
-            <div id="user-library-list" class="flex-1 overflow-y-auto"></div>
-            <div class="mt-2 text-xs text-gray-400"><p>For best performance, please delete files after use.</p></div>
-            <div class="mt-4">
-                <input type="file" id="user-file-input" class="hidden" accept=".pdf">
-                <button id="upload-doc-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg">Upload Document</button>
+  <div class="flex h-full">
+    <!-- Sidebar -->
+    <aside class="w-20 md:w-64 bg-gray-900 text-white flex flex-col justify-between shadow-xl flex-shrink-0">
+      <div>
+        <!-- Logo -->
+        <div class="px-6 py-6 border-b border-gray-700">
+          <h2 class="text-2xl font-extrabold text-indigo-400">Saathi</h2>
+          <p class="text-xs text-gray-400">Financial Copilot</p>
+        </div>
+
+        <!-- Quick Tools -->
+        <nav class="flex flex-col mt-6 space-y-2 px-4">
+          <button id="scam-quiz-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
+            🛡️ <span class="hidden md:inline">Scam Simulator</span>
+          </button>
+          <button id="sip-calculator-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
+            💹 <span class="hidden md:inline">SIP Planner</span>
+          </button>
+          <button id="myth-buster-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
+            💡 <span class="hidden md:inline">Myth Buster</span>
+          </button>
+          <button id="sources-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
+            📂 <span class="hidden md:inline">Sources</span>
+          </button>
+        </nav>
+
+        <!-- My Library -->
+        <div class="px-4 mt-6">
+          <h3 class="text-sm text-gray-400 mb-2">📚 My Library</h3>
+          <div id="user-library-list" class="space-y-3"></div>
+        </div>
+
+        <!-- Upload -->
+        <div class="px-4 mt-4">
+          <input type="file" id="user-file-input" class="hidden" accept=".pdf">
+          <button id="upload-doc-btn" class="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:opacity-90 text-white font-semibold py-2 px-4 rounded-lg shadow">📤 Upload</button>
+        </div>
+      </div>
+
+      <!-- Profile Avatar Bottom -->
+      <div class="px-6 py-6 border-t border-gray-700 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-lg font-bold">U</div>
+        <div class="hidden md:block">
+          <h2 class="font-semibold text-white text-sm">User Name</h2>
+          <p class="text-xs text-gray-400">Pro Account</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col p-6 overflow-hidden">
+      <!-- Top Bar -->
+      <div class="flex justify-between items-center mb-6 flex-shrink-0">
+        <div>
+          <h1 class="text-3xl font-extrabold text-indigo-700">SEBI Saathi 🇮🇳</h1>
+          <p class="text-gray-600">Your Financial Literacy & Compliance Copilot</p>
+        </div>
+        <!-- Search Scope Toggle -->
+        <div class="flex items-center space-x-2">
+          <span class="text-sm font-medium text-gray-700">Search My Library Only</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="search-scope-toggle" class="sr-only peer">
+            <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+          </label>
+        </div>
+      </div>
+
+      <div class="flex flex-1 gap-6 overflow-hidden">
+        <!-- Chat Section -->
+        <section class="flex-1 flex flex-col bg-white rounded-2xl shadow-xl overflow-hidden">
+          <div id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-4"></div>
+          <div id="loading" class="hidden text-center p-2 text-gray-500 flex-shrink-0">Thinking...</div>
+          <div class="border-t p-4 flex gap-3 flex-shrink-0">
+            <input type="text" id="user-input" class="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-indigo-400" placeholder="Ask a question...">
+            <button id="send-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow">Send</button>
+            <form id="upload-form" action="/analyze" method="post" enctype="multipart/form-data" target="_blank" style="display:none;">
+              <input type="file" id="file-input" name="portfolioFile" accept=".csv, .xlsx, .xls">
+            </form>
+            <button id="upload-btn" class="bg-gray-700 hover:bg-gray-800 text-white font-semibold py-3 px-6 rounded-xl shadow">Analyze</button>
+          </div>
+        </section>
+
+        <!-- Right Panel -->
+        <aside class="hidden lg:flex flex-col w-80 bg-white rounded-2xl shadow-xl overflow-hidden flex-shrink-0">
+          <div class="bg-gradient-to-r from-indigo-500 to-purple-600 p-4 text-white">
+            <h2 class="text-lg font-bold">📈 Live Market</h2>
+            <p class="text-xs text-indigo-200">Updated every minute</p>
+          </div>
+          <div class="p-6 space-y-3 text-sm">
+            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition"><span>NIFTY 50</span><span class="font-bold text-green-600">₹19,823.45</span></div>
+            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition"><span>SENSEX</span><span class="font-bold text-red-600">₹66,321.15</span></div>
+            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition"><span>RELIANCE</span><span class="font-bold text-green-600">₹2,492.30</span></div>
+          </div>
+          <hr class="my-3">
+          <div class="p-6 flex-1 overflow-y-auto">
+            <h2 class="text-lg font-bold mb-3">📰 Market News</h2>
+            <div class="space-y-3 text-sm">
+              <div class="p-3 bg-gray-50 rounded-lg shadow-sm hover:shadow-md transition">📌 RBI hints at possible rate cut in upcoming policy.</div>
+              <div class="p-3 bg-gray-50 rounded-lg shadow-sm hover:shadow-md transition">📌 NIFTY expected to test 20,000 as IT stocks rally.</div>
+              <div class="p-3 bg-gray-50 rounded-lg shadow-sm hover:shadow-md transition">📌 Reliance plans expansion into green hydrogen projects.</div>
+              <div class="p-3 bg-gray-50 rounded-lg shadow-sm hover:shadow-md transition">📌 Global markets rally as US Fed signals pause in hikes.</div>
             </div>
+          </div>
         </aside>
+      </div>
+    </main>
+  </div>
 
-        <!-- Main Chat Area -->
-        <main class="flex-1 flex items-center justify-center p-4">
-            <div id="main-container" class="w-full max-w-3xl bg-white rounded-2xl shadow-2xl flex flex-col p-6 h-full">
-                <div class="border-b pb-4 mb-4 flex-shrink-0">
-                    <h1 class="text-3xl font-bold text-gray-800 text-center">SEBI Saathi 🇮🇳</h1>
-                    <p class="text-center text-gray-500">Your Financial Literacy & Compliance Copilot</p>
-                </div>
-
-                <div class="flex justify-between items-center mb-4 flex-shrink-0">
-                    <div class="flex space-x-2">
-                        <button id="scam-quiz-btn" class="bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 text-sm">🛡️ Scam Simulator</button>
-                        <button id="sip-calculator-btn" class="bg-green-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-600 text-sm">💹 SIP Planner</button>
-                        <button id="myth-buster-btn" class="bg-yellow-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-yellow-600 text-sm">💡 Myth Buster</button>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <span class="text-sm font-medium text-gray-700">Search My Library Only</span>
-                        <label class="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" id="search-scope-toggle" class="sr-only peer">
-                            <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                        </label>
-                    </div>
-                </div>
-
-                <div id="chat-container" class="flex-1 p-4 space-y-4 bg-gray-50 rounded-lg"></div>
-                <div id="loading" class="hidden text-center p-2 text-gray-500 flex-shrink-0"><p>Thinking...</p></div>
-
-                <div class="mt-4 pt-4 border-t flex items-center space-x-4 flex-shrink-0">
-                    <input type="text" id="user-input" class="flex-1 p-3 border rounded-lg" placeholder="Ask a question...">
-                    <button id="send-btn" class="bg-indigo-600 text-white font-semibold py-3 px-5 rounded-lg">Send</button>
-                    
-                    <!-- Form for portfolio analysis -->
-                    <form id="upload-form" action="/analyze" method="post" enctype="multipart/form-data" target="_blank" style="display: none;">
-                        <input type="file" id="file-input" name="portfolioFile" accept=".csv, .xlsx, .xls">
-                    </form>
-                    <button id="upload-btn" class="bg-gray-600 text-white font-semibold py-3 px-5 rounded-lg">Analyze Portfolio</button>
-                </div>
-            </div>
-        </main>
+  <!-- Sources Modal -->
+  <div id="sources-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6">
+    <div class="bg-white rounded-2xl p-8 max-w-xl w-full shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-2xl font-bold text-indigo-600">📂 Knowledge Sources</h2>
+        <button id="close-sources-modal" class="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">Close</button>
+      </div>
+      <p class="text-sm text-gray-500 mb-3">These files (PDF/TXT/CSV) are indexed and used to answer your questions.</p>
+      <div id="sources-list" class="space-y-2 max-h-80 overflow-y-auto"></div>
     </div>
+  </div>
 
-    <!-- Modals for Engagement Features -->
-    <div id="scam-modal" class="modal fixed inset-0 bg-gray-800 bg-opacity-75 items-center justify-center p-4">
-        <div class="bg-white rounded-lg p-8 max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4">Scam Simulator</h2>
-            <div id="scam-question" class="bg-gray-100 p-4 rounded mb-4"></div>
-            <div class="flex justify-center space-x-4 mb-4">
-                <button id="scam-choice-btn" class="bg-red-500 text-white px-6 py-2 rounded">Scam</button>
-                <button id="legit-choice-btn" class="bg-green-500 text-white px-6 py-2 rounded">Legit</button>
-            </div>
-            <div id="scam-feedback" class="text-center"></div>
-            <div class="flex justify-end mt-6">
-                <button id="next-scam-btn" class="bg-gray-300 px-4 py-2 rounded mr-2">Next</button>
-                <button id="close-scam-modal" class="bg-gray-300 px-4 py-2 rounded">Close</button>
-            </div>
-        </div>
-    </div>
+  <!-- Scam, SIP, Myth Modals (unchanged) -->
+  <div id="scam-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6"><div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl"><h2 class="text-2xl font-bold mb-4 text-red-600">🛡️ Scam Simulator</h2><div id="scam-question" class="bg-gray-100 p-4 rounded-lg mb-4 shadow-inner"></div><div class="flex justify-center space-x-4 mb-4"><button id="scam-choice-btn" class="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg">Scam</button><button id="legit-choice-btn" class="bg-green-500 hover:bg-green-600 text-white px-6 py-2 rounded-lg">Legit</button></div><div id="scam-feedback" class="text-center"></div><div class="flex justify-end mt-6 gap-2"><button id="next-scam-btn" class="bg-gray-200 px-4 py-2 rounded-lg">Next</button><button id="close-scam-modal" class="bg-gray-200 px-4 py-2 rounded-lg">Close</button></div></div></div>
+  <div id="sip-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6"><div class="bg-white rounded-2xl p-8 max-w-2xl w-full shadow-2xl"><h2 class="text-2xl font-bold mb-4 text-green-600">💹 Goal Planner & SIP Visualizer</h2><div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4"><input type="text" id="sip-goal" placeholder="Goal (e.g., Buy a Car)" class="p-2 border rounded"><input type="number" id="sip-amount" placeholder="Target Amount (₹)" class="p-2 border rounded"><input type="number" id="sip-years" placeholder="Years" class="p-2 border rounded"></div><button id="calculate-sip-btn" class="bg-green-500 hover:bg-green-600 text-white w-full py-2 rounded mb-4">Calculate</button><div id="sip-result" class="text-center font-semibold text-lg mb-4"></div><canvas id="sipChart"></canvas><div class="text-right mt-6"><button id="close-sip-modal" class="bg-gray-200 px-4 py-2 rounded">Close</button></div></div></div>
+  <div id="myth-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6"><div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl"><h2 class="text-2xl font-bold mb-4 text-yellow-600">💡 Market Myth Busters</h2><p class="text-lg mb-2">Is this a Myth or a Fact?</p><div id="myth-statement" class="bg-gray-100 p-4 rounded mb-4 text-center font-semibold"></div><div class="flex justify-center space-x-4 mb-4"><button id="myth-choice-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-2 rounded">Myth</button><button id="fact-choice-btn" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded">Fact</button></div><div id="myth-feedback" class="text-center p-4 rounded"></div><div class="flex justify-end mt-6 gap-2"><button id="next-myth-btn" class="bg-gray-200 px-4 py-2 rounded">Next</button><button id="close-myth-modal" class="bg-gray-200 px-4 py-2 rounded">Close</button></div></div></div>
 
-    <div id="sip-modal" class="modal fixed inset-0 bg-gray-800 bg-opacity-75 items-center justify-center p-4">
-        <div class="bg-white rounded-lg p-8 max-w-2xl w-full">
-            <h2 class="text-2xl font-bold mb-4">Goal Planner & SIP Visualizer</h2>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-                <input type="text" id="sip-goal" placeholder="Goal (e.g., Buy a Car)" class="p-2 border rounded">
-                <input type="number" id="sip-amount" placeholder="Target Amount (₹)" class="p-2 border rounded">
-                <input type="number" id="sip-years" placeholder="Years" class="p-2 border rounded">
-            </div>
-            <button id="calculate-sip-btn" class="bg-green-500 text-white w-full py-2 rounded mb-4">Calculate</button>
-            <div id="sip-result" class="text-center font-semibold text-lg mb-4"></div>
-            <canvas id="sipChart"></canvas>
-            <div class="text-right mt-6">
-                <button id="close-sip-modal" class="bg-gray-300 px-4 py-2 rounded">Close</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="myth-modal" class="modal fixed inset-0 bg-gray-800 bg-opacity-75 items-center justify-center p-4">
-        <div class="bg-white rounded-lg p-8 max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4">Market Myth Busters</h2>
-            <p class="text-lg mb-2">Is this a Myth or a Fact?</p>
-            <div id="myth-statement" class="bg-gray-100 p-4 rounded mb-4 text-center font-semibold"></div>
-            <div class="flex justify-center space-x-4 mb-4">
-                <button id="myth-choice-btn" class="bg-yellow-500 text-white px-6 py-2 rounded">Myth</button>
-                <button id="fact-choice-btn" class="bg-blue-500 text-white px-6 py-2 rounded">Fact</button>
-            </div>
-            <div id="myth-feedback" class="text-center p-4 rounded"></div>
-            <div class="flex justify-end mt-6">
-                <button id="next-myth-btn" class="bg-gray-300 px-4 py-2 rounded mr-2">Next Myth</button>
-                <button id="close-myth-modal" class="bg-gray-300 px-4 py-2 rounded">Close</button>
-            </div>
-        </div>
-    </div>
-
-    <script src="/static/script.js"></script>
+  <script src="/static/script.js"></script>
 </body>
 </html>

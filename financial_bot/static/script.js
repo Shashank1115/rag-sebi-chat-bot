@@ -87,21 +87,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const addMessage = (sender, message, isHtml = false) => {
         const messageWrapper = document.createElement('div');
-        messageWrapper.classList.add('flex', sender === 'user' ? 'user-msg' : 'bot-msg');
+        messageWrapper.classList.add('flex', 'mb-2');
+    
         const messageDiv = document.createElement('div');
-        messageDiv.classList.add('p-3', 'rounded-lg', 'max-w-md');
+        messageDiv.classList.add('p-3', 'rounded-2xl', 'max-w-md', 'shadow');
+    
         if (sender === 'user') {
-            messageDiv.classList.add('bg-blue-500', 'text-white');
+            messageWrapper.classList.add('justify-end');
+            messageDiv.classList.add('bg-blue-700', 'text-white');
             messageDiv.innerHTML = `<p>${message}</p>`;
         } else {
+            messageWrapper.classList.add('justify-start');
             messageDiv.classList.add('bg-indigo-500', 'text-white');
             messageDiv.innerHTML = isHtml ? message : converter.makeHtml(message);
         }
+    
         messageWrapper.appendChild(messageDiv);
         chatContainer.appendChild(messageWrapper);
         chatContainer.scrollTop = chatContainer.scrollHeight;
     };
-
+    
+    // 🔹 Live Market updater
+    async function updateLiveMarket() {
+        try {
+            const response = await fetch('/market/live');
+            const data = await response.json();
+            if (data.error) {
+                console.error(data.error);
+                return;
+            }
+            document.querySelector('#live-nifty').textContent = `₹${data['NIFTY 50']}`;
+            document.querySelector('#live-sensex').textContent = `₹${data['SENSEX']}`;
+            document.querySelector('#live-reliance').textContent = `₹${data['RELIANCE']}`;
+        } catch (err) {
+            console.error("Failed to fetch market data:", err);
+        }
+    }
+    updateLiveMarket();
+    setInterval(updateLiveMarket, 60000);
+    
+    
     const handleSend = async () => {
         const question = userInput.value.trim();
         if (!question) return;
