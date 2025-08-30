@@ -1,0 +1,13 @@
+# Python venv
+.venv/
+venv/
+
+# Vector store & artifacts
+vector_store/
+*.sqlite3
+*.bin
+*.pickle
+
+# Python cache
+__pycache__/
+*.pyc
