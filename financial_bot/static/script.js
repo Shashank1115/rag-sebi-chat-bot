@@ -106,23 +106,56 @@ document.addEventListener('DOMContentLoaded', () => {
         chatContainer.appendChild(messageWrapper);
         chatContainer.scrollTop = chatContainer.scrollHeight;
     };
+    async function loadSebicirculars() {
+        try {
+            const res = await fetch('/sebi/circulars');
+            const json = await res.json();
+            const container = document.querySelector('.news-section'); // adjust to your DOM
+            if (!json.circulars?.length) {
+                container.innerHTML = '<p>No SEBI circulars found.</p>';
+                return;
+            }
+            container.innerHTML = '';
+            json.circulars.forEach(c => {
+                const div = document.createElement('div');
+                div.className = 'p-3 bg-gray-50 rounded-lg shadow-sm hover:shadow-md transition';
+                div.innerHTML = `<a href="${c.url}" target="_blank" class="text-indigo-600 hover:underline text-sm flex justify-between">
+                                    <span>${c.date}</span><span>${c.title}</span>
+                                 </a>`;
+                container.appendChild(div);
+            });
+        } catch (e) {
+            console.error("Failed to load SEBI circulars:", e);
+        }
+    }
+    
+    loadSebicirculars();
+    setInterval(loadSebicirculars, 24 * 60 * 60 * 1000);  // refresh daily
     
     // 🔹 Live Market updater
     async function updateLiveMarket() {
         try {
             const response = await fetch('/market/live');
             const data = await response.json();
-            if (data.error) {
-                console.error(data.error);
-                return;
-            }
-            document.querySelector('#live-nifty').textContent = `₹${data['NIFTY 50']}`;
-            document.querySelector('#live-sensex').textContent = `₹${data['SENSEX']}`;
-            document.querySelector('#live-reliance').textContent = `₹${data['RELIANCE']}`;
+            if (data.error) return console.error(data.error);
+    
+            const updateElem = (id, info) => {
+                const el = document.getElementById(id);
+                const arrow = info.change >= 0 ? '🔺' : '🔻';
+                const color = info.change >= 0 ? 'text-green-600' : 'text-red-600';
+                el.innerHTML = `<span class="${color} font-bold">
+                    ₹${info.price} ${arrow} (${info.pct_change}%)
+                </span>`;
+            };
+    
+            updateElem('nifty-price', data['NIFTY 50']);
+            updateElem('sensex-price', data['SENSEX']);
+            updateElem('reliance-price', data['RELIANCE']);
         } catch (err) {
             console.error("Failed to fetch market data:", err);
         }
     }
+    
     updateLiveMarket();
     setInterval(updateLiveMarket, 60000);
     

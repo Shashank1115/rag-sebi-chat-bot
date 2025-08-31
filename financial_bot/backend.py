@@ -4,6 +4,10 @@ import traceback
 import json
 import random
 import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
+from flask import jsonify
+
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template, send_from_directory, session
 
@@ -71,7 +75,26 @@ def initialize_app():
 
 # --- Flask Routes ---
 
+@app.route('/sebi/circulars')
+def sebi_circulars():
+    url = "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=1&ssid=7&smid=0"
+    res = requests.get(url)
+    soup = BeautifulSoup(res.content, 'html.parser')
 
+    table = soup.find('table')
+    items = []
+    if table:
+        rows = table.find_all('tr')[1:6]  # top 5 recent circulars
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) >= 2:
+                date = cols[0].get_text(strip=True)
+                title_tag = cols[1].find('a')
+                title = title_tag.get_text(strip=True)
+                link = title_tag['href']
+                full_link = requests.compat.urljoin(url, link)
+                items.append({'date': date, 'title': title, 'url': full_link})
+    return jsonify({'circulars': items})
 @app.route('/market/live')
 def market_live():
     try:
@@ -83,11 +106,22 @@ def market_live():
         data = {}
         for name, symbol in tickers.items():
             ticker = yf.Ticker(symbol)
-            price = ticker.history(period="1d")['Close'][-1]
-            data[name] = round(float(price), 2)
+            hist = ticker.history(period="2d")  # need 2 days to calculate change
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                last_close = hist['Close'].iloc[-1]
+                change = last_close - prev_close
+                pct_change = (change / prev_close) * 100 if prev_close else 0
+                data[name] = {
+                    "price": round(float(last_close), 2),
+                    "change": round(float(change), 2),
+                    "pct_change": round(float(pct_change), 2)
+                }
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
 
 @app.route('/')
 def index():
