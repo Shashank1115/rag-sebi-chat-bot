@@ -101,7 +101,9 @@ def market_live():
         tickers = {
             "NIFTY 50": "^NSEI",
             "SENSEX": "^BSESN",
-            "RELIANCE": "RELIANCE.NS"
+            "CDSL": "CDSL.NS",
+            "KFINTECH": "KFINTECH.NS", 
+
         }
         data = {}
         for name, symbol in tickers.items():

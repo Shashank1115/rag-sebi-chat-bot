@@ -1,0 +1,61 @@
+--- CURATED SUMMARY FROM SEBI MASTER CIRCULAR FOR STOCK BROKERS ---
+
+This document contains extracted text from the most important chapters for investor education, rights, and compliance from the SEBI Master Circular for Stock Brokers.
+
+--- III. DEALINGS WITH CLIENT ---
+
+Requirements relating to dealings between a Client and a Stock Broker
+Unless specifically agreed, settlement of funds shall be done within twenty-four hours of the payout. A client may authorize a running account. The authorization must be signed by the client, be dated, and contain a clause that the client may revoke the authorisation at any time. The settlement of running accounts can be done on quarterly and monthly basis.
+
+Handling of Client's Securities by Trading Members/ Clearing Members
+All securities received in pay-out shall be transferred to the demat account of the client within one working day. With regard to unpaid securities, such securities shall be transferred to the client's demat account followed by creation of an auto-pledge. If the client does not fulfill its funds obligation, the broker shall dispose off the securities within five trading days after the pay-out, after giving an intimation to the client.
+
+Settlement of Running Account of Client's Funds lying with Trading Member (TM)
+The TM shall settle the running accounts of clients on a quarterly and monthly basis. Once the TM settles the running account, an intimation shall be sent to the client by SMS on mobile number and also by email. Client shall bring any dispute on the statement of running account to the notice of the TM within thirty working days from the date of the statement.
+
+--- VII. INVESTOR GRIEVANCE REDRESSAL ---
+
+Exclusive e-mail ID for redressal of Investor Complaints
+All registered stock brokers shall designate an e-mail ID of the grievance redressal division/compliance officer exclusively for the purpose of registering complaints by investors.
+
+Redressal of investor complaints against Stock Brokers in SEBI Complaints Redress System (SCORES)
+Investor grievances received by SEBI against stock brokers are taken up electronically with the concerned Stock Exchange(s) through SCORES. The Stock Exchange(s) in turn, take up the matter with the concerned stock brokers. Stock Exchanges shall ensure that the complaints are resolved within fifteen working days from the date of receipt of the complaint.
+
+Publishing Investor Charter and disclosure of Investor Complaints by Stock Brokers on their websites
+(This section references the SEBI Investor Charter, which outlines the vision, mission, rights, and obligations of investors and brokers.)
+
+Rights of Investors:
+
+Ask for and receive information from a firm about the work history and background of the person handling your account.
+
+Receive complete information about the risks, obligations, and costs of any investment before investing.
+
+Receive account statements that are accurate and understandable.
+
+Access your funds in a timely manner and receive information about any restrictions or limitations on access.
+
+Discuss your grievances with the compliance officer of the firm and receive prompt attention.
+
+DOs for Investors:
+
+Read all documents before signing the account opening form.
+
+Receive a copy of KYC and account opening documents.
+
+Register your mobile number and email ID to get regular alerts.
+
+Receive contract notes for trades executed within 24 hours.
+
+Verify details of trades, contract notes, and statements.
+
+DON’Ts for Investors:
+
+Do not deal with unregistered stock brokers.
+
+Do not submit an incomplete account opening and KYC form.
+
+Do not transfer funds for trading to anyone other than the registered stock broker.
+
+Do not share your trading password.
+
+Do not fall prey to schemes promising fixed or guaranteed returns.

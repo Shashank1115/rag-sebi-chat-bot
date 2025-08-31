@@ -1,0 +1,69 @@
+--- CURATED SUMMARY FROM SEBI MASTER CIRCULAR FOR MUTUAL FUNDS ---
+
+This document contains extracted text from the most important chapters for investor education and compliance from the SEBI Master Circular for Mutual Funds.
+
+--- CHAPTER 4: RISK MANAGEMENT FRAMEWORK ---
+
+4.1 Risk Management Framework for Mutual Funds
+4.1.1 With the overall objective of management of key risks involved in mutual fund operation, the Risk Management Framework (RMF) shall provide a set of principles or standards, which inter alia comprise the policies, procedures, risk management functions and roles & responsibilities of the management, the Board of AMC and the Board of Trustees.
+
+4.5 Risk management framework for liquid and overnight funds
+In order to augment the risk management framework for liquid and overnight funds, the following has been decided:
+4.5.1 Liquid funds shall hold at least 20% of its net assets in liquid assets. For this purpose, 'liquid assets' shall include Cash, Government Securities, T-bills and Repo on Government Securities. In case, the exposure in such liquid assets falls below 20% of net assets of the scheme, the AMC shall ensure compliance with the above requirement before making any further investments.
+4.5.2 Liquid Funds and Overnight funds shall not park funds (pending deployment) in short term deposits of scheduled commercial banks.
+4.5.3 Liquid Funds and Overnight Funds shall not invest in debt securities having structured obligations, (SO rating) and/ or credit enhancements (CE rating). However, debt securities with government guarantee shall be excluded from such restriction.
+
+4.6 Prudential Norms regarding holding of liquid assets in Open ended Debt Schemes
+4.6.1 All open ended debt schemes (except Overnight Fund, Liquid Fund, Gilt Fund and Gilt Fund with 10-year constant duration) shall hold at least 10% of their net assets in liquid assets. For this purpose, 'liquid assets' shall include Cash, Government Securities, T-bills and Repo on Government Securities.
+
+--- CHAPTER 12: INVESTMENT BY SCHEMES ---
+
+(This is a highly summarized section focusing on key restrictions)
+
+Mutual Fund schemes shall not invest more than 10% of its NAV in the equity shares or equity related instruments of any single company.
+The scheme shall not invest more than 10% of its NAV in debt instruments issued by a single issuer which are rated not below investment grade. This limit can be extended to 12% of NAV with prior approval of the Board of Trustees.
+Investment in unrated debt instruments for a single issuer shall not exceed 10% of the NAV. Total investment in such instruments shall not exceed 25% of the NAV.
+Mutual funds shall not own more than 10% of any company's paid up capital carrying voting rights.
+Schemes are not allowed to invest in any unlisted security of an associate or group company of the sponsor, or any security issued by way of private placement by an associate or group company of the sponsor.
+
+--- CHAPTER 14: INVESTOR RIGHTS & OBLIGATIONS ---
+
+(This is a simplified summary based on the SEBI Investor Charter, which is often included in these circulars)
+
+Rights of Investors:
+
+To receive complete information about the risks, obligations, and costs of any investment before investing.
+
+To receive recommendations consistent with your financial needs and investment objectives.
+
+To receive a copy of all completed account forms and agreements.
+
+To receive account statements that are accurate and understandable.
+
+To access your funds in a timely manner and receive information about any restrictions or limitations on access.
+
+To discuss your grievances with the compliance officer and receive prompt attention.
+
+DOs for Investors:
+
+Read all documents and conditions before signing the account opening form.
+
+Receive a copy of KYC, account opening documents, and Unique Client Code.
+
+Register your mobile number and email ID in your trading, demat and bank accounts to get regular alerts on your transactions.
+
+Receive contract notes for trades executed, showing transaction price, brokerage, etc., within 24 hours.
+
+Verify details of trades, contract notes, and statements.
+
+DON'Ts for Investors:
+
+Do not deal with unregistered stock brokers or intermediaries.
+
+Do not submit an incomplete account opening and KYC form.
+
+Do not transfer funds, for the purposes of trading, to anyone other than the registered stock broker.
+
+Do not share your trading password with anyone.
+
+Do not fall prey to schemes promising fixed or guaranteed returns.

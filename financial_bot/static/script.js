@@ -150,7 +150,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
             updateElem('nifty-price', data['NIFTY 50']);
             updateElem('sensex-price', data['SENSEX']);
-            updateElem('reliance-price', data['RELIANCE']);
+            updateElem('cdsl-price', data['CDSL']);
+            updateElem('KFINTECH-price', data['KFINTECH']);
         } catch (err) {
             console.error("Failed to fetch market data:", err);
         }
