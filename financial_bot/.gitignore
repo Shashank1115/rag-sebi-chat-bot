@@ -4,6 +4,7 @@ venv/
 
 # Vector store & artifacts
 vector_store/
+user_data/
 *.sqlite3
 *.bin
 *.pickle

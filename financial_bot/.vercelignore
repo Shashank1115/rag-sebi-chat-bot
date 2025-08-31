@@ -1,0 +1,6 @@
+vector_store/
+user_data/
+data/
+venv/
+pycache/
+*.pyc
