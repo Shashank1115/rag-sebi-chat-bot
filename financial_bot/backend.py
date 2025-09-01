@@ -51,7 +51,7 @@ def initialize_app():
     global llm, embeddings, db_main, qa_prompt, analysis_prompt, scam_data, myth_data
     print("--- STARTING INITIALIZATION ---")
     try:
-        llm = ChatGroq(temperature=0, model_name="llama3-8b-8192", api_key=os.getenv("GROQ_API_KEY"))
+        llm = ChatGroq(temperature=0, model_name="llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
         db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
         print("Models and MAIN vector store loaded successfully.")
