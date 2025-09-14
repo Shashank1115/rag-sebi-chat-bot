@@ -1,170 +1,135 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SEBI Saathi - Financial Copilot</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SEBI Saathi</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Inter', sans-serif; }
-    .chat-bubble { max-width: 75%; padding: 0.75rem 1rem; border-radius: 1rem; word-wrap: break-word; }
-    .modal { display: none; }
-    .modal.active { display: flex; }
-  </style>
+  <script src="https://cdn.jsdelivr.net/npm/showdown/dist/showdown.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body class="h-screen overflow-hidden bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100">
-
-  <div class="flex h-full">
+<body class="bg-gray-50 font-inter">
+  <div class="flex h-screen">
     <!-- Sidebar -->
-    <aside class="w-20 md:w-64 bg-gray-900 text-white flex flex-col justify-between shadow-xl flex-shrink-0">
-      <div>
-        <!-- Logo -->
-        <div class="px-6 py-6 border-b border-gray-700">
-          <h2 class="text-2xl font-extrabold text-indigo-400">Saathi</h2>
-          <p class="text-xs text-gray-400">Financial Copilot</p>
-        </div>
-
-        <!-- Quick Tools -->
-        <nav class="flex flex-col mt-6 space-y-2 px-4">
-          <button id="scam-quiz-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
-            🛡️ <span class="hidden md:inline">Scam Simulator</span>
-          </button>
-          <button id="sip-calculator-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
-            💹 <span class="hidden md:inline">SIP Planner</span>
-          </button>
-          <button id="myth-buster-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
-            💡 <span class="hidden md:inline">Myth Buster</span>
-          </button>
-          <button id="sources-btn" class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800 transition">
-            📂 <span class="hidden md:inline">Sources</span>
-          </button>
-        </nav>
-
-        <!-- My Library -->
-        <div class="px-4 mt-6">
-          <h3 class="text-sm text-gray-400 mb-2"> My Library</h3>
-          <div id="user-library-list" class="space-y-3"></div>
-        </div>
-
-        <!-- Upload -->
-        <div class="px-4 mt-4">
-          <input type="file" id="user-file-input" class="hidden" accept=".pdf">
-          <button id="upload-doc-btn" class="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:opacity-90 text-white font-semibold py-2 px-4 rounded-lg shadow"> Upload</button>
-        </div>
+    <aside class="w-64 bg-gray-900 text-white flex flex-col">
+      <div class="p-6 text-2xl font-bold">Saathi <p class="text-xs">Financial Copilot</p></div>
+      <nav class="flex-1 px-2 space-y-2">
+        <button id="scam-quiz-btn" class="w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800">🕵 Scam Simulator</button>
+        <button id="sip-calculator-btn" class="w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800">📈 SIP Planner</button>
+        <button id="myth-buster-btn" class="w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800">🔍 Myth Buster</button>
+        <button id="sources-btn" class="w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800">📂 Sources</button>
+        <button id="ipo-btn" class="w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-800">📑 IPO Analyzer</button>
+        <a href="/dashboard" class="block w-full py-2 px-3 rounded-lg hover:bg-gray-800">📊 Dashboard</a>
+      </nav>
+      <div class="px-4 py-3">
+        <h3 class="text-sm font-semibold">My Library</h3>
+        <div id="user-library-list" class="mt-2 text-xs text-gray-400">Your library is empty.</div>
+        <button id="upload-doc-btn" class="mt-3 bg-gradient-to-r from-purple-500 to-indigo-500 w-full py-2 rounded-lg text-sm font-semibold">Upload</button>
+        <input id="user-file-input" type="file" class="hidden" accept=".pdf" />
       </div>
-
-      <!-- Profile Avatar Bottom -->
-      <div class="px-6 py-6 border-t border-gray-700 flex items-center gap-3">
-        <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-lg font-bold">U</div>
-        <div class="hidden md:block">
-          <h2 class="font-semibold text-white text-sm">{{ current_user.username }}</h2>
-          <p class="text-xs text-gray-400">Pro Account</p>
+      <div class="px-4 py-3 border-t border-gray-700">
+        <div class="flex items-center justify-between text-xs">
+          <span id="user-name">shashank</span>
+          <button id="logout-btn" class="text-red-400 hover:text-red-600">Logout</button>
         </div>
       </div>
     </aside>
 
-    <!-- Main Content -->
-    <main class="flex-1 flex flex-col p-6 overflow-hidden">
-      <!-- Top Bar -->
-      <div class="flex justify-between items-center mb-6 flex-shrink-0">
-        <div>
-          <h1 class="text-3xl font-extrabold text-indigo-700">SEBI Saathi 🇮🇳</h1>
-          <p class="text-gray-600">Your Financial Literacy & Compliance Copilot</p>
-        </div>
-
-        <!-- User info + logout -->
-        <div class="flex items-center gap-4">
-          <div class="text-right mr-2">
-            <div class="text-sm text-gray-700">Signed in as</div>
-            <div class="text-sm font-semibold text-gray-900">{{ current_user.username }}</div>
-          </div>
-          <button id="logout-btn" class="bg-gray-200 hover:bg-gray-300 text-sm px-3 py-2 rounded">Logout</button>
-        </div>
-      </div>
-
-      <div class="flex flex-1 gap-6 overflow-hidden">
-        <!-- Chat Section -->
-        <section class="flex-1 flex flex-col bg-white rounded-2xl shadow-xl overflow-hidden">
-          <div id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-4"></div>
-          <div id="loading" class="hidden text-center p-2 text-gray-500 flex-shrink-0">Thinking...</div>
-          <div class="border-t p-4 flex gap-3 flex-shrink-0">
-            <input type="text" id="user-input" class="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-indigo-400" placeholder="Ask a question...">
-            <button id="send-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow">Send</button>
-            <form id="upload-form" action="/analyze" method="post" enctype="multipart/form-data" style="display:none;">
-              <input type="file" id="file-input" name="portfolioFile" accept=".csv, .xlsx, .xls">
-            </form>
-            <button id="upload-btn" class="bg-gray-700 hover:bg-gray-800 text-white font-semibold py-3 px-6 rounded-xl shadow">Analyze</button>
+    <!-- Main -->
+    <main class="flex-1 flex flex-col">
+      <header class="p-4 bg-gradient-to-r from-indigo-100 to-purple-100 shadow">
+        <h1 class="text-2xl font-bold text-gray-800">SEBI Saathi <span class="text-indigo-600">IN</span></h1>
+        <p class="text-gray-600">Your Financial Literacy & Compliance Copilot</p>
+      </header>
+      <div class="flex flex-1">
+        <!-- Chat -->
+        <section class="flex-1 flex flex-col p-4 overflow-y-auto">
+          <div id="chat-container" class="flex-1 overflow-y-auto space-y-2"></div>
+          <div id="loading" class="hidden text-gray-500 text-sm">Thinking...</div>
+          <div class="flex items-center mt-3 gap-2">
+            <input id="user-input" type="text" placeholder="Ask a question..." class="flex-1 border rounded-lg px-3 py-2"/>
+            <button id="send-btn" class="bg-indigo-500 text-white px-4 py-2 rounded-lg">Send</button>
+            <button id="upload-btn" class="bg-gray-700 text-white px-4 py-2 rounded-lg">Analyze</button>
+            <input id="file-input" type="file" class="hidden" accept=".csv,.xlsx,.xls"/>
           </div>
         </section>
 
-        <!-- Right Panel -->
-        <aside class="hidden lg:flex flex-col w-80 bg-white rounded-2xl shadow-xl overflow-hidden flex-shrink-0">
-          <div class="bg-gradient-to-r from-indigo-500 to-purple-600 p-4 text-white">
-            <h2 class="text-lg font-bold"> Live Market</h2>
-            <p class="text-xs text-indigo-200">Updated every minute</p>
+        <!-- Sidebar Right -->
+        <aside class="w-80 bg-white border-l p-4 flex flex-col">
+          <h2 class="text-lg font-bold text-purple-700">Live Market</h2>
+          <p class="text-xs text-gray-500 mb-3">Updated every few minutes</p>
+          <div class="space-y-2">
+            <div id="nifty-price"></div>
+            <div id="sensex-price"></div>
+            <div id="cdsl-price"></div>
+            <div id="KFINTECH-price"></div>
           </div>
-          <div class="p-6 space-y-3 text-sm">
-            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition">
-              <span>NIFTY 50</span>
-              <span id="nifty-price" class="font-bold">--</span>
-            </div>
-            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition">
-              <span>SENSEX</span>
-              <span id="sensex-price" class="font-bold">--</span>
-            </div>
-            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition">
-              <span>CDSL</span>
-              <span id="cdsl-price" class="font-bold">--</span>
-            </div>
-            <div class="p-3 bg-gray-50 rounded-lg shadow-sm flex justify-between hover:shadow-md transition">
-              <span>KFINTECH</span>
-              <span id="KFINTECH-price" class="font-bold">--</span>
-            </div>
-          </div>
-          <hr class="my-3">
-          <div class="p-6 flex-1 overflow-y-auto">
-            <div class="space-y-3 text-sm">
-              <h2 class="text-lg font-bold mb-3">SEBI Circulars</h2>
-              <div class="news-section space-y-2 text-sm"></div>
-            </div>
-          </div>
+          <h2 class="text-lg font-bold text-purple-700 mt-6">SEBI Circulars</h2>
+          <div class="news-section mt-2 space-y-2 overflow-y-auto flex-1"></div>
         </aside>
       </div>
     </main>
   </div>
 
-  <!-- Sources Modal -->
-  <div id="sources-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6">
-    <div class="bg-white rounded-2xl p-8 max-w-xl w-full shadow-2xl">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-2xl font-bold text-indigo-600">📂 Knowledge Sources</h2>
-        <button id="close-sources-modal" class="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">Close</button>
+  <!-- Scam Modal -->
+  <div id="scam-modal" class="modal hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div class="bg-white p-6 rounded-lg w-96">
+      <h2 class="text-lg font-bold mb-4">Scam or Legit?</h2>
+      <p id="scam-question" class="mb-3"></p>
+      <div class="flex gap-2">
+        <button id="scam-choice-btn" class="flex-1 bg-red-500 text-white py-2 rounded-lg">Scam</button>
+        <button id="legit-choice-btn" class="flex-1 bg-green-500 text-white py-2 rounded-lg">Legit</button>
       </div>
-      <p class="text-sm text-gray-500 mb-3">These files (PDF/TXT/CSV) are indexed and used to answer your questions.</p>
-      <div id="sources-list" class="space-y-2 max-h-80 overflow-y-auto"></div>
+      <div id="scam-feedback" class="mt-3 text-sm"></div>
+      <button id="next-scam-btn" class="mt-4 w-full bg-gray-700 text-white py-2 rounded-lg">Next</button>
+      <button id="close-scam-modal" class="absolute top-2 right-2">❌</button>
     </div>
   </div>
 
-  <!-- Portfolio Modal -->
-  <div id="portfolio-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center p-6">
-    <div class="bg-white rounded-2xl p-8 max-w-2xl w-full shadow-2xl">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-2xl font-bold text-indigo-600">📊 Portfolio Analysis</h2>
-        <button id="close-portfolio-modal" class="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">Close</button>
+  <!-- SIP Modal -->
+  <div id="sip-modal" class="modal hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div class="bg-white p-6 rounded-lg w-96">
+      <h2 class="text-lg font-bold mb-4">SIP Calculator</h2>
+      <input id="sip-goal" type="text" placeholder="Goal (e.g. Retirement)" class="w-full border px-2 py-1 mb-2"/>
+      <input id="sip-amount" type="number" placeholder="Target Amount (₹)" class="w-full border px-2 py-1 mb-2"/>
+      <input id="sip-years" type="number" placeholder="Years" class="w-full border px-2 py-1 mb-2"/>
+      <button id="calculate-sip-btn" class="w-full bg-indigo-500 text-white py-2 rounded-lg">Calculate</button>
+      <div id="sip-result" class="mt-3 text-sm"></div>
+      <canvas id="sipChart" class="mt-4"></canvas>
+      <button id="close-sip-modal" class="absolute top-2 right-2">❌</button>
+    </div>
+  </div>
+
+  <!-- Myth Modal -->
+  <div id="myth-modal" class="modal hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div class="bg-white p-6 rounded-lg w-96">
+      <h2 class="text-lg font-bold mb-4">Myth Buster</h2>
+      <p id="myth-statement" class="mb-3"></p>
+      <div class="flex gap-2">
+        <button id="myth-choice-btn" class="flex-1 bg-red-500 text-white py-2 rounded-lg">Myth</button>
+        <button id="fact-choice-btn" class="flex-1 bg-green-500 text-white py-2 rounded-lg">Fact</button>
       </div>
-      <p class="text-sm text-gray-500 mb-3">Upload your stock portfolio (CSV/Excel) for instant analysis.</p>
-      <form id="portfolio-form" action="/analyze" method="post" enctype="multipart/form-data" class="space-y-4">
-        <input type="file" name="portfolioFile" accept=".csv, .xlsx, .xls" class="block w-full border rounded p-2">
-        <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded">Analyze</button>
+      <div id="myth-feedback" class="mt-3 text-sm"></div>
+      <button id="next-myth-btn" class="mt-4 w-full bg-gray-700 text-white py-2 rounded-lg">Next</button>
+      <button id="close-myth-modal" class="absolute top-2 right-2">❌</button>
+    </div>
+  </div>
+
+  <!-- IPO Modal -->
+  <div id="ipo-modal" class="modal hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div class="bg-white p-6 rounded-lg w-[600px] max-h-[90vh] overflow-y-auto">
+      <h2 class="text-lg font-bold mb-4">IPO Analyzer</h2>
+      <form id="ipo-form" class="space-y-3">
+        <input type="file" id="ipo-file" name="ipoFile" accept=".pdf,.txt" class="block w-full"/>
+        <textarea id="ipo-content" name="content" placeholder="Or paste IPO text here..." class="w-full border px-2 py-1 h-32"></textarea>
+        <button type="submit" class="w-full bg-indigo-500 text-white py-2 rounded-lg">Analyze IPO</button>
       </form>
-      <div id="portfolio-result" class="mt-4 text-sm text-gray-700 max-h-80 overflow-y-auto"></div>
+      <div id="ipo-report" class="mt-4 prose prose-sm max-w-none"></div>
+      <button id="close-ipo-modal" class="absolute top-2 right-2">❌</button>
     </div>
   </div>
 
-  <!-- Scam, SIP, Myth Modals are unchanged -->
   <script src="/static/script.js"></script>
 </body>
 </html>

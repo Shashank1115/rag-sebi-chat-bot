@@ -2,12 +2,13 @@
 """
 Robust backend for financial_bot.
 
-Changes from original:
- - Adds exponential backoff + retries wrapper for transient embedding/search failures
- - Adds an LRU cache for local embeddings
- - Adds a local SentenceTransformers fallback for embeddings when remote/embed provider fails
- - Wraps similarity_search calls with a fallback that prevents 500 crashes when embedding quota is exhausted
- - Keeps all routes and original logic intact
+Features:
+ - Exponential backoff + retries wrapper for transient embedding/search failures
+ - LRU cache for local embeddings
+ - Local SentenceTransformers fallback for embeddings when remote provider fails
+ - similarity_search wrapper with fallback to local embeddings to avoid 500s
+ - IPO analyzer endpoint (file or pasted content)
+ - Portfolio upload / dashboard endpoints, SEBI circulars scraping, live market data
 """
 
 import os
@@ -44,12 +45,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate
 from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings   # << local embeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings   # local HF embeddings
 from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from functools import lru_cache
 # markdown converter (server-side use)
 from markdown import markdown
+from werkzeug.utils import secure_filename
 
 # Local fallback embedder
 try:
@@ -174,7 +176,6 @@ def get_local_embedder():
     global _local_embedder
     if _local_embedder is None:
         if SentenceTransformer is None:
-            # Informative error; user can install sentence-transformers if desired
             raise RuntimeError("sentence-transformers is not installed. Install with: pip install sentence-transformers")
         logger.info("Loading SentenceTransformers model: %s", LOCAL_EMBED_MODEL)
         _local_embedder = SentenceTransformer(LOCAL_EMBED_MODEL)
@@ -182,19 +183,14 @@ def get_local_embedder():
 
 @lru_cache(maxsize=EMBED_CACHE_SIZE)
 def _cached_local_embed(text: str):
-    # returns a tuple (for lru_cache hashable requirement)
     model = get_local_embedder()
     vec = model.encode(text)
-    # convert to native Python floats in tuple form so cache stores compactly
     return tuple(float(x) for x in vec.tolist())
 
 def local_embed_list(text: str):
     return list(_cached_local_embed(text))
 
 def with_retries(fn, max_attempts=EMBED_MAX_RETRIES):
-    """
-    Generic retry wrapper with exponential backoff + jitter.
-    """
     attempt = 1
     while True:
         try:
@@ -210,14 +206,8 @@ def with_retries(fn, max_attempts=EMBED_MAX_RETRIES):
             attempt += 1
 
 def similarity_search_with_fallback(query: str, k: int = 4, user_vector_store_path: str = None):
-    """
-    Try db similarity_search (primary). On failure (for example embed provider rate limits),
-    fallback to computing a local embedding and using similarity_search_by_vector.
-    If user_vector_store_path is provided, it will attempt to operate on that store instead.
-    """
     global db_main, embeddings
 
-    # choose the vectorstore to use
     target_db = None
     try:
         if user_vector_store_path:
@@ -233,23 +223,18 @@ def similarity_search_with_fallback(query: str, k: int = 4, user_vector_store_pa
                 raise RuntimeError("Main vectorstore not initialized.")
             target_db = db_main
 
-        # Primary attempt: let the vectorstore handle the query (this might call the configured embedding function)
         try:
             logger.debug("Primary similarity_search via vectorstore (query='%s' k=%d)", query[:120], k)
             return with_retries(lambda: target_db.similarity_search(query, k=k))
         except Exception as primary_exc:
-            # log and attempt fallback
             logger.warning("Primary similarity_search failed: %s. Falling back to local embedding.", repr(primary_exc))
-            # fallback: local embedding + search by vector
             qvec = local_embed_list(query)
             logger.debug("Local embedding computed (len=%d). Calling similarity_search_by_vector.", len(qvec))
-            # Try multiple possible method names for compatibility
             if hasattr(target_db, "similarity_search_by_vector"):
                 return target_db.similarity_search_by_vector(qvec, k=k)
             elif hasattr(target_db, "similarity_search_with_score_by_vector"):
                 return target_db.similarity_search_with_score_by_vector(qvec, k=k)
             else:
-                # last attempt: call similarity_search with vector argument (some versions accept vectors)
                 return target_db.similarity_search(qvec, k=k)
     except Exception:
         logger.exception("Both primary and fallback similarity_search attempts failed.")
@@ -267,29 +252,24 @@ def initialize_app():
         if not GROQ_API_KEY:
             logger.warning("GROQ_API_KEY not set. LLM may fail.")
 
-        # ✅ Use Groq for LLM
         llm = ChatGroq(
             temperature=0,
             model_name="llama-3.1-8b-instant",
             api_key=GROQ_API_KEY
         )
 
-        # ✅ Use local sentence-transformers via HuggingFaceEmbeddings for embedding_function
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
 
-        # ✅ Initialize Chroma DB (main persistent store)
         os.makedirs(VECTOR_STORE_PATH_MAIN, exist_ok=True)
         db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
         logger.info("Models and MAIN vector store loaded successfully (or opened).")
 
-        # Engagement content
         scam_data = safe_load_json(os.path.join(DATA_PATH, 'scam_examples.json'))
         myth_data = safe_load_json(os.path.join(DATA_PATH, 'myths.json'))
         logger.info("Engagement data loaded (scam examples: %d, myths: %d).", len(scam_data), len(myth_data))
 
-        # Prompts
         qa_prompt_template = (
             "CONTEXT: {context}\n"
             "QUESTION: {question}\n"
@@ -310,22 +290,16 @@ def initialize_app():
         logger.exception("FATAL ERROR DURING INITIALIZATION")
         return False
 
-# rest of your routes stay intact...
-
-
 # -----------------------
 # --- ROUTES (API) -----
 # -----------------------
 
-# Basic index - sets user_id in session if new
 @app.route('/')
 def index():
     if 'anon_id' not in session:
         session['anon_id'] = os.urandom(8).hex()
     return render_template('index.html')
 
-# -----------------------
-# SEBI circulars scraping
 @app.route('/sebi/circulars')
 def sebi_circulars():
     url = "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=1&ssid=7&smid=0"
@@ -339,7 +313,7 @@ def sebi_circulars():
     table = soup.find('table')
     items = []
     if table:
-        rows = table.find_all('tr')[1:6]  # top 5 recent circulars
+        rows = table.find_all('tr')[1:6]
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 2:
@@ -355,8 +329,6 @@ def sebi_circulars():
                 items.append({'date': date, 'title': title, 'url': full_link})
     return jsonify({'circulars': items})
 
-# -----------------------
-# Live market data
 @app.route('/market/live')
 def market_live():
     try:
@@ -389,8 +361,6 @@ def market_live():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# -----------------------
-# Ask endpoint (RAG) with robust fallback
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True, silent=True) or {}
@@ -406,17 +376,14 @@ def ask():
         user_vector_store_path = os.path.join(USER_DATA_PATH, user_id or '', "vector_store")
 
         if search_scope == 'user_only' and os.path.exists(user_vector_store_path):
-            # try user vectorstore first (with fallback)
             try:
                 docs = similarity_search_with_fallback(question, k=4, user_vector_store_path=user_vector_store_path)
             except Exception as e:
                 logger.warning("User-only search failed, falling back to main store: %s", repr(e))
                 docs = similarity_search_with_fallback(question, k=4, user_vector_store_path=None)
         else:
-            # search main knowledge base (primary)
             docs = similarity_search_with_fallback(question, k=4, user_vector_store_path=None)
 
-        # build context from retrieved docs
         context = "\n\n".join([getattr(doc, 'page_content', str(doc)) for doc in (docs or [])])
         if not context.strip():
             context = "No relevant information was found in the selected knowledge base."
@@ -429,8 +396,6 @@ def ask():
         logger.exception("--- AN ERROR OCCURRED IN /ask ---")
         return jsonify({'error': 'A server error occurred.'}), 500
 
-# -----------------------
-# Upload & ingest user documents (PDFs)
 @app.route('/upload_and_ingest', methods=['POST'])
 def upload_and_ingest():
     file = request.files.get('userFile')
@@ -462,8 +427,6 @@ def upload_and_ingest():
         logger.exception("--- AN ERROR OCCURRED DURING USER INGESTION ---")
         return jsonify({'error': 'Failed to process the document.'}), 500
 
-# -----------------------
-# Delete user file
 @app.route('/delete_user_file', methods=['POST'])
 def delete_user_file():
     data = request.get_json(force=True, silent=True) or {}
@@ -496,8 +459,6 @@ def delete_user_file():
         logger.exception("--- ERROR deleting file ---")
         return jsonify({'error': 'Failed to delete file.'}), 500
 
-# -----------------------
-# Get user library
 @app.route('/get_user_library', methods=['GET'])
 def get_user_library():
     user_id = session.get('user_id')
@@ -508,8 +469,6 @@ def get_user_library():
         return jsonify({'user_library': os.listdir(user_docs_path)})
     return jsonify({'user_library': []})
 
-# -----------------------
-# Portfolio analysis (file-based) - existing /analyze endpoint (AI markdown response + chart data)
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'portfolioFile' not in request.files:
@@ -532,9 +491,7 @@ def analyze():
             os.remove(tmp_path)
             return jsonify({'error': 'Unsupported file format'}), 400
 
-        # compute investment value
         if not {'Quantity', 'Current Price', 'Sector'}.issubset(df.columns):
-            # attempt to infer columns if typical headers are different
             possible_qty = next((c for c in df.columns if c.lower() in ('quantity','qty','shares')), None)
             possible_price = next((c for c in df.columns if c.lower() in ('current price','price','last price','ltp')), None)
             possible_sector = next((c for c in df.columns if c.lower() in ('sector','industry')), None)
@@ -560,8 +517,145 @@ def analyze():
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-# -----------------------
-# Engagement routes: quiz/myth/SIP
+# IPO analyzer helpers and route
+IPO_CHECKLIST = [
+    ("financials", "Financial disclosures (revenue, profits, margins, debt levels)"),
+    ("governance", "Corporate governance & promoter/shareholding structure"),
+    ("use_of_proceeds", "Use of IPO proceeds (expansion, debt repayment, acquisitions)"),
+    ("business_risks", "Business risks, litigation, regulatory exposures"),
+    ("market_position", "Market position, competitive moat and growth drivers"),
+    ("compliance", "Regulatory / SEBI disclosures (DRHP completeness, approvals)"),
+]
+
+def extract_text_from_pdf(path, max_chars=100000):
+    try:
+        loader = PyPDFLoader(path)
+        docs = loader.load()
+        text = "\n\n".join([d.page_content for d in docs])
+        return text[:max_chars]
+    except Exception:
+        try:
+            with open(path, 'rb') as f:
+                return f.read().decode('utf-8', errors='ignore')[:max_chars]
+        except Exception:
+            return ""
+
+def simple_rule_extract(text):
+    res = {}
+    lower = text.lower()
+    import re
+    m = re.search(r'(revenue|turnover)[^\d{0,6}]*([\d,\.]+\s*(?:crore|cr|₹|rs|rs\.|m|bn|b|million|billion)?)', text, re.I)
+    if m:
+        res['revenue'] = m.group(2).strip()
+    m2 = re.search(r'(profit|net profit|net income)[^\d{0,6}]*([\d,\,\.\s]+(?:crore|cr|₹|rs|m|bn|b|million|billion)?)', text, re.I)
+    if m2:
+        res['profit'] = m2.group(2).strip()
+    m3 = re.search(r'(debt|total debt|borrowings)[^\d{0,6}]*([\d,\,\.\s]+(?:crore|cr|₹|rs|m|bn|b|million|billion)?)', text, re.I)
+    if m3:
+        res['debt'] = m3.group(2).strip()
+    if 'promoter' in lower:
+        res['promoter_mentioned'] = True
+    return res
+
+@app.route('/ipo/analyze', methods=['POST'])
+@login_required
+def ipo_analyze():
+    try:
+        text = ""
+        if 'ipoFile' in request.files and request.files['ipoFile'].filename:
+            f = request.files['ipoFile']
+            filename = secure_filename(f.filename)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1])
+            f.save(tmp.name)
+            try:
+                if filename.lower().endswith('.pdf'):
+                    text = extract_text_from_pdf(tmp.name)
+                else:
+                    with open(tmp.name, 'rb') as fh:
+                        text = fh.read().decode('utf-8', errors='ignore')
+            finally:
+                try:
+                    os.remove(tmp.name)
+                except Exception:
+                    pass
+        elif request.form.get('content'):
+            text = request.form.get('content')[:150000]
+        elif request.json and request.json.get('content'):
+            text = request.json.get('content')[:150000]
+
+        if not text or not text.strip():
+            return jsonify({'error': 'No IPO content provided.'}), 400
+
+        meta = simple_rule_extract(text)
+        checklist_out = []
+        for key, label in IPO_CHECKLIST:
+            checklist_out.append({'key': key, 'label': label, 'status': 'Unknown', 'notes': ''})
+
+        report_md = ""
+        try:
+            if llm is None:
+                raise Exception("LLM not initialized")
+
+            excerpt = text[:8000]
+            prompt = [
+                "You are 'SEBI Saathi', an IPO analyst. Analyze the following IPO prospectus/excerpt and produce a structured report.",
+                "Follow these steps exactly:",
+                "1) For each checklist item, say: status = {Verified | Partially Verified | Missing}, short reason (1-2 lines).",
+                "2) Extract key facts: revenue, profit, debt amounts (if present), promoter stake (if present), stated use of proceeds.",
+                "3) Provide growth-positive factors (bullet list), risks (bullet list).",
+                "4) Provide a 1-5 priority score per checklist item and an overall IPO score (out of 30).",
+                "5) Output final result as MARKDOWN only. No apologies, no meta text.",
+                "",
+                "CHECKLIST:",
+            ]
+            for _, label in IPO_CHECKLIST:
+                prompt.append(f"- {label}")
+            prompt.append("\nPROSPECTUS EXCERPT:\n")
+            prompt.append(excerpt)
+            formatted_prompt = "\n".join(prompt)
+
+            result = llm.invoke(formatted_prompt)
+            report_md = getattr(result, 'content', str(result))
+        except Exception as e:
+            logger.exception("LLM-based IPO analysis failed; using heuristic fallback: %s", e)
+            parts = []
+            parts.append("# IPO Quick Analysis (heuristic fallback)")
+            parts.append("")
+            parts.append("**Extracted facts (heuristic):**")
+            if meta:
+                for k, v in meta.items():
+                    parts.append(f"- **{k.replace('_',' ').title()}:** {v}")
+            else:
+                parts.append("- No clear numeric facts found in the provided excerpt.")
+            parts.append("")
+            parts.append("**Checklist (heuristic / not exhaustive):**")
+            for item in checklist_out:
+                label = item['label']
+                low = label.lower()
+                status = "Missing"
+                notes = ""
+                if any(w in text.lower() for w in ["profit", "revenue", "turnover", "income"]) and "financial" in low:
+                    status = "Partially Verified"
+                    notes = "Financials mentioned but not fully validated by human."
+                if "promoter" in low and ("promoter" in text.lower() or "promoters" in text.lower()):
+                    status = "Verified"
+                    notes = "Promoter/shareholding text appears in the excerpt."
+                parts.append(f"- **{label}**: **{status}**. {notes}")
+            parts.append("")
+            parts.append("**Growth positives (heuristic):**")
+            parts.append("- Could not determine automatically — provide more text or use LLM.")
+            parts.append("")
+            parts.append("**Risks (heuristic):**")
+            parts.append("- Not analyzed in-depth in fallback mode.")
+            parts.append("")
+            parts.append("**Overall (heuristic):** Score: 10/30 (fallback)")
+            report_md = "\n".join(parts)
+
+        return jsonify({'ipo_report_md': report_md})
+    except Exception:
+        app.logger.error("IPO analyze error:\n" + traceback.format_exc())
+        return jsonify({'error': 'Internal server error during IPO analysis.'}), 500
+
 @app.route('/quiz/next_question', methods=['GET'])
 def next_quiz_question():
     if scam_data:
@@ -597,8 +691,6 @@ def calculate_sip():
     except Exception as e:
         return jsonify({'error': f'Invalid input. {e}'}), 400
 
-# -----------------------
-# RAG sources listing and serving
 @app.route('/sources', methods=['GET'])
 def list_sources():
     try:
@@ -627,28 +719,19 @@ def serve_source_file(filename):
     except FileNotFoundError:
         return jsonify({'error': 'File not found'}), 404
 
-# -----------------------
-# -----------------------
-# AUTH + User / Portfolio features
-# -----------------------
-
-# Register page (template)
 @app.route('/register')
 def register_page():
     return render_template('register.html')
 
-# Login page (template)
 @app.route('/login')
 def login_page():
     return render_template('login.html')
 
-# Dashboard page (template)
 @app.route('/dashboard')
 @login_required
 def dashboard_page():
     return render_template('dashboard.html')
 
-# Register endpoint
 @app.route('/auth/register', methods=['POST'])
 def register():
     data = request.get_json(force=True, silent=True) or {}
@@ -667,7 +750,6 @@ def register():
     db.session.add(user)
     db.session.commit()
 
-    # create default portfolio
     portfolio = Portfolio(name="Default Portfolio", user_id=user.id)
     db.session.add(portfolio)
     db.session.commit()
@@ -675,7 +757,6 @@ def register():
     login_user(user)
     return jsonify({'success': True, 'user_id': user.id, 'username': user.username})
 
-# Login endpoint
 @app.route('/auth/login', methods=['POST'])
 def login():
     data = request.get_json(force=True, silent=True) or {}
@@ -692,20 +773,14 @@ def login():
     payload = build_dashboard_payload(user.id)
     return jsonify({'success': True, 'dashboard': payload})
 
-# Logout
 @app.route('/auth/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
     return jsonify({'success': True})
 
-# -----------------------
-# Portfolio upload/upsert endpoints & dashboard builder
-# -----------------------
-
 def upsert_portfolio_from_df(user_id, df, portfolio_name="Default Portfolio"):
     df = df.rename(columns={c: c.strip() for c in df.columns})
-    # detect columns
     symbol_col = next((c for c in df.columns if c.lower() in ('symbol','ticker','scrip','stock')), None)
     qty_col = next((c for c in df.columns if c.lower() in ('quantity','qty','shares')), None)
     price_col = next((c for c in df.columns if c.lower() in ('avg_price','avg price','price','cost','current price','ltp')), None)
@@ -718,7 +793,6 @@ def upsert_portfolio_from_df(user_id, df, portfolio_name="Default Portfolio"):
         db.session.add(portfolio)
         db.session.commit()
 
-    # remove existing holdings for that portfolio (replace)
     Holding.query.filter_by(portfolio_id=portfolio.id).delete()
 
     for _, row in df.iterrows():
@@ -772,8 +846,6 @@ def get_portfolio():
     payload = build_dashboard_payload(current_user.id)
     return jsonify(payload)
 
-# -----------------------
-# Dashboard builder / news & sentiment helpers
 POSITIVE_WORDS = {"beats","upgrade","raised","approved","good","strong","positive","gain","growth","outperform","record","profit","surge"}
 NEGATIVE_WORDS = {"downgrade","cut","loss","falls","fall","decline","weak","negative","recall","scandal","fraud","drops","hit","miss"}
 
@@ -781,16 +853,10 @@ _price_cache = {}
 CACHE_TTL = 300  # seconds (5 min)
 
 def fetch_latest_prices(symbols):
-    """
-    Return dict mapping symbol->last_price (float) or None.
-    Cached for 5 minutes to avoid Yahoo rate limits.
-    Uses yfinance batch download where possible.
-    """
     out = {}
     now = time.time()
     need_fetch = []
 
-    # check cache first
     for sym in symbols:
         if sym in _price_cache and (now - _price_cache[sym]["time"]) < CACHE_TTL:
             out[sym] = _price_cache[sym]["price"]
@@ -799,14 +865,13 @@ def fetch_latest_prices(symbols):
 
     if need_fetch:
         try:
-            # batch download instead of 1-by-1
             data = yf.download(need_fetch, period="1d", group_by="ticker", progress=False)
             for sym in need_fetch:
                 try:
                     if sym in data and not data[sym].empty:
                         last = data[sym]["Close"].iloc[-1]
                         price = float(last)
-                    elif "Close" in data and not data.empty:  # single symbol case
+                    elif "Close" in data and not data.empty:
                         last = data["Close"].iloc[-1]
                         price = float(last)
                     else:
@@ -818,7 +883,6 @@ def fetch_latest_prices(symbols):
                 out[sym] = price
         except Exception as e:
             app.logger.debug(f"fetch_latest_prices: batch failed: {e}")
-            # fallback: set None for missing
             for sym in need_fetch:
                 out[sym] = None
                 _price_cache[sym] = {"price": None, "time": now}
@@ -826,15 +890,10 @@ def fetch_latest_prices(symbols):
     return out
 
 def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
-    """
-    Return a list of headline strings for `symbol`.
-    Tries NewsAPI if api_key provided; otherwise falls back to a lightweight Google News scrape.
-    """
     symbol = (symbol or "").strip()
     if not symbol:
         return []
 
-    # Prefer NewsAPI (clean param usage)
     if api_key:
         try:
             q = f'"{symbol}" OR {symbol} stock OR {symbol} share OR {symbol} company'
@@ -860,7 +919,6 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
         except Exception as e:
             app.logger.warning(f"NewsAPI error for {symbol}: {e}")
 
-    # Fallback: Google News scraping (fragile)
     try:
         query = urllib.parse.quote_plus(f"{symbol} stock")
         search_url = f"https://www.google.com/search?q={query}&tbm=nws"
@@ -869,7 +927,6 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         items = []
-        # Google's markup may change; this is a best-effort heuristic
         for g in soup.select("div.dbsr")[:max_headlines]:
             title_el = g.select_one("div.JheGif, div.JheGif.nDgy9d")
             title = title_el.get_text(strip=True) if title_el else ""
@@ -881,13 +938,8 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
         return []
 
 @app.route('/news/<symbol>', methods=['GET'])
-@login_required  # remove this decorator if you want the endpoint public
+@login_required
 def news_for_symbol(symbol):
-    """
-    Endpoint: GET /news/<symbol>?max=5
-    Returns recent headlines for a given symbol (uses NewsAPI if configured, otherwise scrapes Google News).
-    Results are cached in-memory for NEWS_CACHE_TTL seconds.
-    """
     symbol = (symbol or "").strip().upper()
     if not symbol:
         return jsonify({'error': 'symbol required'}), 400
@@ -906,7 +958,6 @@ def news_for_symbol(symbol):
     NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "").strip() or None
     headlines = fetch_headlines_for_symbol(symbol, api_key=NEWSAPI_KEY, max_headlines=max_headlines)
 
-    # store in cache (even if empty list to avoid repeated failed calls)
     NEWS_CACHE[cache_key] = {'time': now, 'payload': headlines}
 
     source = 'newsapi' if NEWSAPI_KEY and headlines else 'google_scrape' if headlines else 'none'
@@ -922,7 +973,6 @@ def simple_sentiment_estimate(headlines):
             if w in txt: score -= 1
     if not headlines:
         return 0.0
-    # heuristic scaling
     return max(-1.0, min(1.0, score / (len(headlines) * 3.0)))
 
 def discover_company_name(sym):
@@ -968,7 +1018,6 @@ def build_dashboard_payload(user_id):
         for item in holdings_payload:
             allocations[item['symbol']] = round((item['current_value'] / total_value) * 100, 2)
     else:
-        # either no prices available or zero holdings
         for item in holdings_payload:
             allocations[item['symbol']] = 0.0
 
@@ -1010,7 +1059,6 @@ def create_db_and_seed(app):
     with app.app_context():
         db.create_all()
         logger.info("Database created/checked.")
-        # optional: seed a test user if needed (comment out if not wanted)
         if not User.query.filter_by(username="test").first():
             u = User(username="test", email="test@example.com")
             u.set_password("test123")
@@ -1022,15 +1070,11 @@ def create_db_and_seed(app):
             logger.info("Seeded test user (username=test / password=test123)")
 
 if __name__ == '__main__':
-    # create DB
     create_db_and_seed(app)
-
-    # initialize llm + embeddings + prompts
     ok = initialize_app()
     if not ok:
         logger.warning("Initialization had errors. LLM/embeddings may not work until configured correctly.")
     else:
         logger.info("Initialization complete.")
-
     logger.info("Starting Flask server on http://0.0.0.0:%s ...", os.getenv("PORT", "5001"))
     app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5001)), debug=True, use_reloader=False)
