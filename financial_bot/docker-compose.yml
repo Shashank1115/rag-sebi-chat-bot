@@ -12,6 +12,9 @@ services:
       # Set these as needed:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - NEWSAPI_KEY=${NEWSAPI_KEY}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}
+      - MARKETAUX_API_KEY=${MARKETAUX_API_KEY}
       - USE_GOOGLE_EMBEDDINGS=0
       - LOCAL_EMBED_MODEL=all-MiniLM-L6-v2
       - HF_EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2

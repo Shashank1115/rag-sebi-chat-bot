@@ -63,6 +63,182 @@ except Exception:
 NEWS_CACHE = {}
 NEWS_CACHE_TTL = 10 * 60  # 10 minutes
 
+# --- Stock news helpers (providers + utilities) ---
+def _is_probable_ticker(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if " " in t:
+        return False
+    return len(t) <= 20 and any(c.isalpha() for c in t)
+
+def _safe_combine_title_desc(title: str, desc: str) -> str:
+    title = (title or "").strip()
+    desc = (desc or "").strip()
+    if not title and not desc:
+        return ""
+    if not desc or desc.lower() in title.lower():
+        return title
+    return f"{title} — {desc}"
+
+def _recent_date_range(days: int = 14):
+    try:
+        to_dt = datetime.utcnow().date()
+        from_dt = to_dt.fromordinal(to_dt.toordinal() - max(1, days))
+        return from_dt.isoformat(), to_dt.isoformat()
+    except Exception:
+        return "2024-01-01", datetime.utcnow().date().isoformat()
+
+def _fetch_news_finnhub(symbol: str, max_headlines: int):
+    token = (os.getenv("FINNHUB_API_KEY") or os.getenv("FINNHUB_TOKEN") or "").strip()
+    if not token:
+        return []
+    frm, to = _recent_date_range(14)
+    try:
+        url = "https://finnhub.io/api/v1/company-news"
+        params = {"symbol": symbol, "from": frm, "to": to, "token": token}
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json() or []
+        out = []
+        for item in data[:max_headlines]:
+            title = item.get("headline") or item.get("title")
+            summary = item.get("summary") or ""
+            combined = _safe_combine_title_desc(title, summary)
+            if combined:
+                out.append(combined)
+        return out
+    except Exception as e:
+        app.logger.warning(f"Finnhub news error for {symbol}: {e}")
+        return []
+
+def _fetch_news_marketaux(symbol: str, max_headlines: int):
+    token = (os.getenv("MARKETAUX_API_KEY") or os.getenv("MARKETAUX_TOKEN") or "").strip()
+    if not token:
+        return []
+    try:
+        url = "https://api.marketaux.com/v1/news"
+        params = {
+            "symbols": symbol,
+            "filter_entities": "true",
+            "language": "en",
+            "countries": os.getenv("NEWS_COUNTRIES", "in"),
+            "limit": max_headlines,
+            "sort": "published_at:desc",
+            "api_token": token,
+        }
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json() or {}
+        articles = data.get("data") or []
+        out = []
+        for a in articles[:max_headlines]:
+            title = a.get("title")
+            desc = a.get("description") or ""
+            combined = _safe_combine_title_desc(title, desc)
+            if combined:
+                out.append(combined)
+        return out
+    except Exception as e:
+        app.logger.warning(f"Marketaux news error for {symbol}: {e}")
+        return []
+
+def _fetch_news_alphavantage(symbol: str, max_headlines: int):
+    key = (os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_TOKEN") or "").strip()
+    if not key:
+        return []
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "tickers": symbol,
+            "sort": "LATEST",
+            "apikey": key,
+        }
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json() or {}
+        feed = data.get("feed") or []
+        out = []
+        for item in feed[:max_headlines]:
+            title = item.get("title")
+            summary = item.get("summary") or ""
+            combined = _safe_combine_title_desc(title, summary)
+            if combined:
+                out.append(combined)
+        return out
+    except Exception as e:
+        app.logger.warning(f"AlphaVantage news error for {symbol}: {e}")
+        return []
+
+def _fetch_news_newsapi(query: str, max_headlines: int, api_key: str):
+    try:
+        q = f'"{query}" (stock OR shares OR company) (NSE OR BSE OR India)'
+        params = {
+            "q": q,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": max_headlines,
+            "apiKey": api_key,
+        }
+        r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json() or {}
+        if data.get("status") == "ok":
+            out = []
+            for a in (data.get("articles") or [])[:max_headlines]:
+                title = (a.get("title") or "").strip()
+                desc = (a.get("description") or "").strip()
+                combined = _safe_combine_title_desc(title, desc)
+                if combined:
+                    out.append(combined)
+            return out
+    except Exception as e:
+        app.logger.warning(f"NewsAPI error for {query}: {e}")
+    return []
+
+def _fetch_news_google(query: str, max_headlines: int):
+    try:
+        q = urllib.parse.quote_plus(f"{query} stock")
+        search_url = f"https://www.google.com/search?q={q}&tbm=nws"
+        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+        r = requests.get(search_url, headers=headers, timeout=8)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        items = []
+        for g in soup.select("div.dbsr")[:max_headlines]:
+            title_el = g.select_one("div.JheGif, div.JheGif.nDgy9d, div[role='heading']")
+            title = title_el.get_text(strip=True) if title_el else ""
+            if title:
+                items.append(title)
+        return items
+    except Exception as e:
+        app.logger.warning(f"Google news scrape failed for {query}: {e}")
+        return []
+
+def fetch_stock_headlines(symbol: str, max_headlines: int = 5) -> list:
+    """Ticker-first stock news with fallbacks to general sources."""
+    s = (symbol or "").strip()
+    if not s:
+        return []
+    # Try ticker-aware providers when input looks like a ticker (e.g., RELIANCE.NS)
+    if _is_probable_ticker(s):
+        for fetcher in (_fetch_news_finnhub, _fetch_news_marketaux, _fetch_news_alphavantage):
+            try:
+                items = fetcher(s, max_headlines)
+            except Exception:
+                items = []
+            if items:
+                return items
+    # NewsAPI fallback if configured
+    newsapi_key = (os.getenv("NEWSAPI_KEY") or "").strip()
+    if newsapi_key:
+        items = _fetch_news_newsapi(s, max_headlines, newsapi_key)
+        if items:
+            return items
+    # Last resort: Google News scrape
+    return _fetch_news_google(s, max_headlines)
+
 # --- Load env ---
 load_dotenv()
 
@@ -956,7 +1132,8 @@ def news_for_symbol(symbol):
         return jsonify({'source': 'cache', 'symbol': symbol, 'headlines': cached['payload']})
 
     NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "").strip() or None
-    headlines = fetch_headlines_for_symbol(symbol, api_key=NEWSAPI_KEY, max_headlines=max_headlines)
+    # Prefer ticker-aware providers; falls back internally to NewsAPI/Google
+    headlines = fetch_stock_headlines(symbol, max_headlines=max_headlines)
 
     NEWS_CACHE[cache_key] = {'time': now, 'payload': headlines}
 
@@ -1027,7 +1204,7 @@ def build_dashboard_payload(user_id):
     for h in sorted_holdings:
         company_name = discover_company_name(h['symbol'])
         query_key = company_name if company_name else h['symbol']
-        headlines = fetch_headlines_for_symbol(query_key, api_key=NEWSAPI_KEY, max_headlines=5)
+        headlines = fetch_stock_headlines(query_key, max_headlines=5)
         sent = simple_sentiment_estimate(headlines)
         qty_factor = math.log1p(h['quantity'])
         est_pct = round(sent * 3.0 * qty_factor, 2)

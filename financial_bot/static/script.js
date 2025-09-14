@@ -1,4 +1,4 @@
-// static/script.js
+﻿// static/script.js
 document.addEventListener('DOMContentLoaded', () => {
     // converter for markdown -> html
     const converter = new showdown.Converter();
@@ -459,7 +459,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadSources() {
         if (!sourcesListEl) return;
-        sourcesListEl.innerHTML = '<div class="text-gray-500">Loading…</div>';
+        sourcesListEl.innerHTML = '<div class="text-gray-500">Loadingâ€¦</div>';
         try {
             const res = await fetch('/sources');
             const j = await res.json();
@@ -628,3 +628,4 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { /* no-op */ }
     })();
 });
+
