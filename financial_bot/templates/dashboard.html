@@ -6,65 +6,108 @@
   <title>Dashboard - SEBI Saathi</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    body { 
+      font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; 
+    }
+    .font-display { font-family: 'Manrope', sans-serif; }
   </style>
 </head>
-<body class="min-h-screen bg-gray-50">
-  <header class="bg-white shadow px-6 py-4 flex items-center justify-between">
-    <div>
-      <h1 class="text-xl font-bold text-indigo-700">SEBI Saathi</h1>
-      <p class="text-xs text-gray-500">Dashboard</p>
-    </div>
-    <div class="flex gap-3 items-center">
-      <a href="/" class="text-sm text-gray-600 hover:underline">Chat</a>
-      <button id="logoutBtn" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded">Logout</button>
+<body class="min-h-screen bg-gradient-to-br from-slate-50 to-gray-100">
+  <header class="bg-white/80 backdrop-blur-sm border-b border-gray-200 px-6 py-4 sticky top-0 z-50">
+    <div class="flex items-center justify-between max-w-7xl mx-auto">
+      <div class="flex items-center space-x-4">
+        <div class="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-700 rounded-xl flex items-center justify-center">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold font-display text-gray-900">SEBI Saathi</h1>
+          <p class="text-sm text-gray-600 font-medium">Portfolio Dashboard</p>
+        </div>
+      </div>
+      <div class="flex gap-3 items-center">
+        <a href="/" class="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors">
+          <svg class="w-4 h-4 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+          </svg>
+          Chat Assistant
+        </a>
+        <button id="logoutBtn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-medium transition-colors">
+          Logout
+        </button>
+      </div>
     </div>
   </header>
 
-  <main class="p-6 max-w-6xl mx-auto">
-    <section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-      <div class="md:col-span-2 bg-white rounded-lg shadow p-4">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="font-semibold text-lg">Portfolio Summary</h2>
-          <div class="text-sm text-gray-500">Total value: <span id="totalValue">—</span></div>
+  <main class="p-6 max-w-7xl mx-auto">
+    <section class="grid grid-cols-1 xl:grid-cols-4 gap-6 mb-8">
+      <div class="xl:col-span-3 bg-white/70 backdrop-blur-sm rounded-2xl border border-gray-200 p-6 shadow-sm">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="font-bold text-xl font-display text-gray-900">Portfolio Overview</h2>
+            <p class="text-gray-600 text-sm mt-1">Your investment holdings and performance</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm text-gray-600 font-medium">Total Portfolio Value</p>
+            <p class="text-2xl font-bold font-display text-gray-900" id="totalValue">—</p>
+          </div>
         </div>
 
-        <div id="holdingsTableWrap" class="overflow-auto">
+        <div id="holdingsTableWrap" class="overflow-auto rounded-xl border border-gray-200">
           <table class="w-full text-sm">
-            <thead class="text-left text-xs text-gray-500">
-              <tr>
-                <th class="p-2">Symbol</th>
-                <th class="p-2">Qty</th>
-                <th class="p-2">Avg Price</th>
-                <th class="p-2">Last Price</th>
-                <th class="p-2">Value</th>
+            <thead class="bg-gray-50">
+              <tr class="text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                <th class="p-4">Symbol</th>
+                <th class="p-4">Quantity</th>
+                <th class="p-4">Avg Price</th>
+                <th class="p-4">Last Price</th>
+                <th class="p-4">Current Value</th>
               </tr>
             </thead>
-            <tbody id="holdingsBody"></tbody>
+            <tbody id="holdingsBody" class="divide-y divide-gray-200"></tbody>
           </table>
         </div>
       </div>
 
-      <aside class="bg-white rounded-lg shadow p-4">
-        <h3 class="font-semibold mb-3">Portfolio Actions</h3>
+      <aside class="bg-white/70 backdrop-blur-sm rounded-2xl border border-gray-200 p-6 shadow-sm">
+        <h3 class="font-bold text-lg font-display text-gray-900 mb-6">Portfolio Actions</h3>
 
-        <div class="mb-4">
-          <label class="block text-sm text-gray-600 mb-2">Upload portfolio (CSV / XLSX)</label>
-          <input id="portfolioFile" type="file" accept=".csv,.xls,.xlsx" class="block w-full text-sm" />
-          <button id="uploadPortfolioBtn" class="mt-3 w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded">Upload & Save</button>
+        <div class="mb-8 p-4 bg-gray-50 rounded-xl border border-gray-200">
+          <label class="block text-sm font-semibold text-gray-900 mb-3">Upload Portfolio File</label>
+          <p class="text-xs text-gray-600 mb-3">Supported formats: CSV, XLSX</p>
+          <input id="portfolioFile" type="file" accept=".csv,.xls,.xlsx" 
+                 class="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200 file:cursor-pointer cursor-pointer" />
+          <button id="uploadPortfolioBtn" 
+                  class="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-semibold transition-colors">
+            Upload & Analyze
+          </button>
         </div>
 
-        <div>
-          <h4 class="font-medium mb-2">Allocation</h4>
-          <canvas id="allocChart" width="300" height="300"></canvas>
+        <div class="p-4 bg-gradient-to-br from-gray-50 to-slate-50 rounded-xl border border-gray-200">
+          <h4 class="font-semibold text-gray-900 mb-4 font-display">Asset Allocation</h4>
+          <div class="flex justify-center">
+            <canvas id="allocChart" width="280" height="280"></canvas>
+          </div>
         </div>
       </aside>
     </section>
 
-    <section class="bg-white rounded-lg shadow p-4">
-      <h3 class="font-semibold mb-4">Alerts (based on recent headlines)</h3>
-      <div id="alertsList" class="space-y-3 text-sm text-gray-700"></div>
+    <section class="bg-white/70 backdrop-blur-sm rounded-2xl border border-gray-200 p-6 shadow-sm">
+      <div class="flex items-center mb-6">
+        <div class="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center mr-3">
+          <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+          </svg>
+        </div>
+        <div>
+          <h3 class="font-bold text-lg font-display text-gray-900">Market Alerts</h3>
+          <p class="text-gray-600 text-sm">Based on recent market headlines and news</p>
+        </div>
+      </div>
+      <div id="alertsList" class="space-y-4"></div>
     </section>
   </main>
 
@@ -82,7 +125,6 @@
       try {
         const res = await fetch('/portfolio', { credentials: 'same-origin' });
         if (res.status === 401) {
-          // not logged in — redirect to login
           window.location.href = '/login';
           return;
         }
@@ -94,21 +136,20 @@
 
         totalValueEl.textContent = j.total_value ? `₹${Number(j.total_value).toLocaleString('en-IN')}` : '—';
 
-        // holdings table
         holdingsBody.innerHTML = '';
         (j.holdings || []).forEach(h => {
           const tr = document.createElement('tr');
+          tr.className = 'hover:bg-gray-50 transition-colors';
           tr.innerHTML = `
-            <td class="p-2 border-t">${h.symbol}</td>
-            <td class="p-2 border-t">${h.quantity}</td>
-            <td class="p-2 border-t">${h.avg_price ?? ''}</td>
-            <td class="p-2 border-t">${h.last_price ?? ''}</td>
-            <td class="p-2 border-t">₹${Number(h.current_value || 0).toLocaleString('en-IN')}</td>
+            <td class="p-4 font-semibold text-gray-900">${h.symbol}</td>
+            <td class="p-4 text-gray-700">${h.quantity}</td>
+            <td class="p-4 text-gray-700">₹${h.avg_price ?? '—'}</td>
+            <td class="p-4 text-gray-700">₹${h.last_price ?? '—'}</td>
+            <td class="p-4 font-semibold text-gray-900">₹${Number(h.current_value || 0).toLocaleString('en-IN')}</td>
           `;
           holdingsBody.appendChild(tr);
         });
 
-        // allocation chart
         const alloc = j.allocations || {};
         const labels = Object.keys(alloc);
         const values = Object.values(alloc);
@@ -121,26 +162,49 @@
           const ctx = document.getElementById('allocChart').getContext('2d');
           allocChart = new Chart(ctx, {
             type: 'pie',
-            data: { labels, datasets: [{ data: values }] },
-            options: { plugins: { legend: { position: 'bottom' } } }
+            data: { 
+              labels, 
+              datasets: [{ 
+                data: values,
+                backgroundColor: [
+                  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+                  '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
+                  '#F8C471', '#82E0AA', '#F1948A', '#85C1E9', '#D7BDE2'
+                ],
+                borderWidth: 3,
+                borderColor: '#ffffff'
+              }] 
+            },
+            options: { 
+              plugins: { 
+                legend: { 
+                  position: 'bottom',
+                  labels: {
+                    padding: 15,
+                    usePointStyle: true,
+                    font: { size: 11 }
+                  }
+                }
+              },
+              maintainAspectRatio: false
+            }
           });
         }
 
-        // alerts
         alertsList.innerHTML = '';
         (j.alerts || []).forEach(a => {
           const container = document.createElement('div');
-          container.className = 'p-3 border rounded';
+          container.className = 'p-4 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl';
           container.innerHTML = `
-            <div class="flex justify-between items-start">
+            <div class="flex justify-between items-start mb-3">
               <div>
-                <div class="font-medium">${a.symbol} — ${a.sentiment}</div>
-                <div class="text-xs text-gray-500">Estimated move: ${a.estimated_pct_move}%</div>
+                <div class="font-semibold text-amber-900 font-display">${a.symbol} — ${a.sentiment}</div>
+                <div class="text-sm text-amber-700 font-medium">Estimated move: ${a.estimated_pct_move}%</div>
               </div>
             </div>
-            <div class="mt-2 text-xs">
-              <strong>Headlines:</strong>
-              <ul class="list-disc list-inside mt-1">
+            <div class="text-sm text-amber-800">
+              <strong class="font-semibold">Recent Headlines:</strong>
+              <ul class="list-disc list-inside mt-2 space-y-1 text-amber-700">
                 ${ (a.headlines || []).slice(0,5).map(h => `<li>${escapeHtml(h)}</li>`).join('') }
               </ul>
             </div>
@@ -153,7 +217,6 @@
       }
     }
 
-    // upload portfolio file -> /portfolio/upload (expects field 'file')
     uploadPortfolioBtn.addEventListener('click', async () => {
       const file = portfolioFile.files[0];
       if (!file) {
@@ -168,10 +231,7 @@
         const res = await fetch('/portfolio/upload', { method: 'POST', body: fd });
         const j = await res.json();
         if (res.ok && j.success) {
-          // refresh view with returned dashboard if present
           if (j.dashboard) {
-            // small optimization: if backend returned dashboard payload, render it directly
-            // but to keep behaviour consistent, call loadDashboard again
             await loadDashboard();
           } else {
             await loadDashboard();
@@ -184,7 +244,7 @@
         alert('Upload failed — see console.');
       } finally {
         uploadPortfolioBtn.disabled = false;
-        uploadPortfolioBtn.textContent = 'Upload & Save';
+        uploadPortfolioBtn.textContent = 'Upload & Analyze';
         portfolioFile.value = '';
       }
     });
@@ -203,9 +263,7 @@
       }
     });
 
-    // initial load
     loadDashboard();
-    // optional: refresh every 60s
     setInterval(loadDashboard, 60 * 1000);
   </script>
 </body>

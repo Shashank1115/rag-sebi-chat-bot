@@ -1,4 +1,4 @@
-// static/script.js
+﻿// static/script.js
 document.addEventListener('DOMContentLoaded', () => {
     // converter for markdown -> html
     const converter = new showdown.Converter();
@@ -224,44 +224,244 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    function createPortfolioPage(md, chartData) {
-        const analysisHtml = converter.makeHtml(md || '');
-        const chartJson = JSON.stringify(chartData || {});
-        return `
-            <!doctype html>
-            <html>
-            <head>
-                <meta charset="utf-8"/>
-                <meta name="viewport" content="width=device-width,initial-scale=1"/>
-                <title>Portfolio Analysis</title>
-                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-                <link href="https://cdn.tailwindcss.com" rel="stylesheet">
-            </head>
-            <body class="p-6">
-                <div class="max-w-4xl mx-auto">
-                    <h1 class="text-2xl font-bold mb-2">Portfolio Health Check</h1>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div><canvas id="portfolioChart"></canvas></div>
-                        <div class="prose">${analysisHtml}</div>
-                    </div>
-                </div>
-                <script>
-                    const chartData = ${chartJson};
-                    if (chartData && Object.keys(chartData).length) {
-                        const ctx = document.getElementById('portfolioChart').getContext('2d');
-                        new Chart(ctx, {
-                            type: 'pie',
-                            data: {
-                                labels: Object.keys(chartData),
-                                datasets: [{ data: Object.values(chartData) }]
-                            }
-                        });
-                    }
-                </script>
-            </body>
-            </html>
-        `;
+    function createPortfolioPage(md, chartData = {}, holdings = []) {
+  // small helper: detect the first pipe-style table block and convert to an HTML table
+  function convertPipeTableBlocks(rawMd) {
+    if (!rawMd || typeof rawMd !== 'string') return rawMd;
+    // find contiguous lines that look like a pipe table (must contain '|' and at least one line with alphanumeric)
+    const lines = rawMd.split('\n');
+    let start = -1, end = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (l.includes('|') && /[A-Za-z0-9]/.test(l)) {
+        if (start === -1) start = i;
+        end = i;
+      } else {
+        if (start !== -1) break;
+      }
     }
+    if (start === -1) return rawMd; // no table-like block
+
+    const block = lines.slice(start, end + 1);
+    // require at least 2 lines (header + at least one row)
+    if (block.length < 2) return rawMd;
+
+    // parse rows by splitting on '|' and trimming; remove empty leading/trailing columns
+    const rows = block.map(row => row.split('|').map(c => c.trim()).filter((_, idx, arr) => !(idx === 0 && arr[0] === '') && !(idx === arr.length - 1 && arr[arr.length - 1] === '')));
+    // build table HTML
+    const thead = rows[0].map(h => `<th class="px-3 py-2 text-left bg-gray-50 text-sm text-gray-700 font-medium border-b">${escapeHtml(h)}</th>`).join('');
+    const tbodyRows = rows.slice(1).map(r => {
+      const cols = r.map(c => `<td class="px-3 py-2 text-sm text-gray-700 border-b">${escapeHtml(c)}</td>`).join('');
+      return `<tr>${cols}</tr>`;
+    }).join('');
+    const tableHtml = `<div class="overflow-x-auto"><table class="w-full table-auto border-collapse text-sm">${thead ? `<thead><tr>${thead}</tr></thead>` : ''}<tbody>${tbodyRows}</tbody></table></div>`;
+
+    // replace the block in rawMd (join everything back)
+    const before = lines.slice(0, start).join('\n');
+    const after = lines.slice(end + 1).join('\n');
+    const result = [before, tableHtml, after].filter(Boolean).join('\n\n');
+    return result;
+  }
+
+  // helper to escape HTML inside table cells
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  }
+
+  // first, try converting pipe-table blocks to HTML so Showdown doesn't render the pipes as text
+  let processedMd = convertPipeTableBlocks(md || '');
+
+  // then convert markdown -> HTML (Showdown)
+  let analysisHtml = '';
+  try {
+    analysisHtml = (window && window.converter) ? window.converter.makeHtml(processedMd) : new showdown.Converter().makeHtml(processedMd);
+  } catch (e) {
+    console.warn('markdown conversion failed, falling back to raw text', e);
+    // fallback - escape html and wrap paragraphs
+    analysisHtml = `<pre style="white-space:pre-wrap">${escapeHtml(md || '')}</pre>`;
+  }
+
+  const chartJson = JSON.stringify(chartData || {});
+  const holdingsJson = JSON.stringify(holdings || []);
+
+  // final composed page
+  return `
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Portfolio Analysis - SEBI Saathi</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; background: #f8fafc; color: #1f2937; }
+  .container { max-width: 1100px; margin: 2.5rem auto; padding: 1rem; }
+  .card { background: #fff; border-radius: 1rem; padding: 1.5rem; box-shadow: 0 6px 20px rgba(2,6,23,0.04); border: 1px solid #eef2f7; }
+  .analysis-grid { display: grid; grid-template-columns: 420px 1fr; gap: 1.5rem; align-items: start; }
+  .prose { color: #374151; line-height: 1.65; font-size: 0.98rem; }
+  /* responsive fallback */
+  @media (max-width: 900px) { .analysis-grid { grid-template-columns: 1fr; } .chart-wrap{width:100%;} }
+
+  /* small table look for sidebar composition */
+  .comp-table table { width: 100%; border-collapse: collapse; font-size:0.92rem; }
+  .comp-table th, .comp-table td { padding: 8px 10px; border-bottom: 1px solid #eef2f7; text-align: left; }
+  .comp-table th { background: #f8fafc; color:#374151; font-weight:600; font-size:0.85rem; }
+  .sidebar { width: 300px; margin-left: 1.5rem; }
+  .sidebar .small-card { background:#fff; border-radius:10px; padding:12px; border:1px solid #eef2f7; margin-bottom:12px; }
+  .muted { color:#6b7280; font-size:0.92rem; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="flex items-center justify-between mb-4">
+        <h1 class="text-2xl font-bold">AI-Powered Analysis</h1>
+        <div class="muted">Generated just now • <span style="font-weight:600;color:#059669">Confidence: High</span></div>
+      </div>
+
+      <div style="display:flex; gap:1.5rem; align-items:flex-start; flex-wrap:wrap;">
+        <div class="analysis-grid" style="flex:1 1 640px;">
+          <div>
+            <div class="chart-wrap card" style="padding:1rem;">
+              <canvas id="portfolioChart" style="width:100%;max-height:360px;"></canvas>
+              <div id="chart-legend" class="mt-3 text-xs muted"></div>
+            </div>
+          </div>
+
+          <div class="prose" id="analysis-body">
+            ${analysisHtml}
+          </div>
+        </div>
+
+        <aside class="sidebar" aria-hidden="false">
+          <div class="small-card">
+            <div style="font-weight:700">Quick Actions</div>
+            <div class="muted" style="margin-top:6px">
+              <div><a href="/" style="color:#2563eb;text-decoration:none">← Back to Chat</a></div>
+              <div style="margin-top:6px"><a href="/dashboard" style="color:#7c3aed;text-decoration:none">📊 Dashboard</a></div>
+              <div style="margin-top:6px"><button onclick="window.print()" style="color:#059669;background:none;border:none;padding:0;cursor:pointer">⬇ Export Report</button></div>
+            </div>
+          </div>
+
+          <div class="small-card">
+            <div style="font-weight:700">Analysis Info</div>
+            <div class="muted" style="margin-top:6px">
+              <div style="display:flex;justify-content:space-between"><span>Generated</span><strong>Just now</strong></div>
+              <div style="display:flex;justify-content:space-between;margin-top:6px"><span>Model</span><strong style="color:#2563eb">SEBI AI</strong></div>
+              <div style="display:flex;justify-content:space-between;margin-top:6px"><span>Confidence</span><strong style="color:#059669">High</strong></div>
+            </div>
+          </div>
+
+          <div id="composition-card" class="small-card">
+            <div style="font-weight:700;margin-bottom:8px">Portfolio Composition</div>
+            <div id="composition-table" class="comp-table muted">No composition table found.</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const chartData = ${chartJson};
+
+  // Render Chart
+  try {
+    if (chartData && Object.keys(chartData).length) {
+      const ctx = document.getElementById('portfolioChart').getContext('2d');
+      const labels = Object.keys(chartData);
+      const values = Object.values(chartData);
+      const chart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            backgroundColor: ['#3b82f6','#f97316','#f43f5e','#06b6d4','#10b981','#a78bfa','#9ca3af','#f59e0b']
+          }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+      });
+      // small legend text
+      const legend = labels.map((l,i)=>\`<span style="display:inline-block;margin-right:10px;font-size:12px"><span style="display:inline-block;width:10px;height:10px;background:\${chart.data.datasets[0].backgroundColor[i]};margin-right:6px;border-radius:2px;vertical-align:middle"></span>\${l}</span>\`).join('');
+      document.getElementById('chart-legend').innerHTML = legend;
+    } else {
+      document.getElementById('portfolioChart').parentElement.innerHTML = '<div style="padding:1.5rem" class="muted">No chart data available.</div>';
+    }
+  } catch (e) { console.error(e); }
+
+  // Try to extract a table from the analysis body (Showdown may have emitted <table> or pipe block converted earlier)
+  try {
+    const analysisEl = document.getElementById('analysis-body');
+    if (analysisEl) {
+      // find first table element within
+      const tableEl = analysisEl.querySelector('table');
+      if (tableEl) {
+        // Clone and style table for sidebar
+        const clone = tableEl.cloneNode(true);
+        // ensure class names for styling
+        clone.classList.add('w-full');
+        // move into composition-table
+        const compWrap = document.getElementById('composition-table');
+        compWrap.innerHTML = '';
+        // wrap in our own simple table styling
+        const newTable = document.createElement('div');
+        newTable.className = 'comp-table';
+        newTable.appendChild(clone);
+        compWrap.appendChild(newTable);
+        // Optionally remove the big table from the main analysis body (so it only appears in sidebar)
+        // analysisEl.querySelector('table').remove();
+      } else {
+        // Sometimes table isn't converted; try to detect pipe-style lines and create table
+        const text = analysisEl.innerText || '';
+        const lines = text.split('\\n').map(l=>l.trim()).filter(Boolean);
+        const pipeBlock = lines.filter(l => l.includes('|'));
+        if (pipeBlock.length >= 2) {
+          // build table from pipeBlock
+          const rows = pipeBlock.map(r => r.split('|').map(c=>c.trim()).filter((_,i,arr)=>!(i===0 && arr[0]==='') && !(i===arr.length-1 && arr[arr.length-1]==='')));
+          const head = rows[0];
+          const body = rows.slice(1);
+          let html = '<table><thead><tr>';
+          head.forEach(h => html += '<th>'+h+'</th>');
+          html += '</tr></thead><tbody>';
+          body.forEach(row => { html += '<tr>'; row.forEach(c => html += '<td>'+c+'</td>'); html += '</tr>'; });
+          html += '</tbody></table>';
+          document.getElementById('composition-table').innerHTML = html;
+          // optionally remove pipe block from main content (not doing aggressive removal because it may alter narrative)
+        }
+      }
+    }
+  } catch (e) { console.error('composition extraction', e); }
+
+  // If holdings were passed, optionally build a structured holdings table in composition-card
+  try {
+    const holdings = ${holdingsJson || '[]'};
+    if (holdings && holdings.length) {
+      const compWrap = document.getElementById('composition-table');
+      // build a neat table
+      let rows = '';
+      holdings.forEach(h => {
+        const ticker = h.ticker || h.symbol || h.name || '';
+        const qty = h.qty != null ? h.qty : '';
+        const value = h.value != null ? Number(h.value).toLocaleString('en-IN') : '';
+        const pct = h.pct != null ? (Number(h.pct).toFixed(2) + '%') : '';
+        rows += '<tr><td>'+ticker+'</td><td>'+qty+'</td><td>₹'+value+'</td><td>'+pct+'</td></tr>';
+      });
+      compWrap.innerHTML = '<div class="comp-table"><table><thead><tr><th>Ticker</th><th>Qty</th><th>Value</th><th>Alloc</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+  } catch(e) { console.error('holdings render', e); }
+
+})();
+</script>
+</body>
+</html>
+`;
+}
+
+
 
     // ------------------------------
     // User library
