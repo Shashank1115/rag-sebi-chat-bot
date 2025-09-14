@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dashboard - SEBI Saathi</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50">
+  <header class="bg-white shadow px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-bold text-indigo-700">SEBI Saathi</h1>
+      <p class="text-xs text-gray-500">Dashboard</p>
+    </div>
+    <div class="flex gap-3 items-center">
+      <a href="/" class="text-sm text-gray-600 hover:underline">Chat</a>
+      <button id="logoutBtn" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded">Logout</button>
+    </div>
+  </header>
+
+  <main class="p-6 max-w-6xl mx-auto">
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+      <div class="md:col-span-2 bg-white rounded-lg shadow p-4">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-semibold text-lg">Portfolio Summary</h2>
+          <div class="text-sm text-gray-500">Total value: <span id="totalValue">—</span></div>
+        </div>
+
+        <div id="holdingsTableWrap" class="overflow-auto">
+          <table class="w-full text-sm">
+            <thead class="text-left text-xs text-gray-500">
+              <tr>
+                <th class="p-2">Symbol</th>
+                <th class="p-2">Qty</th>
+                <th class="p-2">Avg Price</th>
+                <th class="p-2">Last Price</th>
+                <th class="p-2">Value</th>
+              </tr>
+            </thead>
+            <tbody id="holdingsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="bg-white rounded-lg shadow p-4">
+        <h3 class="font-semibold mb-3">Portfolio Actions</h3>
+
+        <div class="mb-4">
+          <label class="block text-sm text-gray-600 mb-2">Upload portfolio (CSV / XLSX)</label>
+          <input id="portfolioFile" type="file" accept=".csv,.xls,.xlsx" class="block w-full text-sm" />
+          <button id="uploadPortfolioBtn" class="mt-3 w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded">Upload & Save</button>
+        </div>
+
+        <div>
+          <h4 class="font-medium mb-2">Allocation</h4>
+          <canvas id="allocChart" width="300" height="300"></canvas>
+        </div>
+      </aside>
+    </section>
+
+    <section class="bg-white rounded-lg shadow p-4">
+      <h3 class="font-semibold mb-4">Alerts (based on recent headlines)</h3>
+      <div id="alertsList" class="space-y-3 text-sm text-gray-700"></div>
+    </section>
+  </main>
+
+  <script>
+    const totalValueEl = document.getElementById('totalValue');
+    const holdingsBody = document.getElementById('holdingsBody');
+    const alertsList = document.getElementById('alertsList');
+    const portfolioFile = document.getElementById('portfolioFile');
+    const uploadPortfolioBtn = document.getElementById('uploadPortfolioBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    let allocChart = null;
+
+    async function loadDashboard() {
+      try {
+        const res = await fetch('/portfolio', { credentials: 'same-origin' });
+        if (res.status === 401) {
+          // not logged in — redirect to login
+          window.location.href = '/login';
+          return;
+        }
+        const j = await res.json();
+        if (j.error) {
+          console.error(j);
+          return;
+        }
+
+        totalValueEl.textContent = j.total_value ? `₹${Number(j.total_value).toLocaleString('en-IN')}` : '—';
+
+        // holdings table
+        holdingsBody.innerHTML = '';
+        (j.holdings || []).forEach(h => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="p-2 border-t">${h.symbol}</td>
+            <td class="p-2 border-t">${h.quantity}</td>
+            <td class="p-2 border-t">${h.avg_price ?? ''}</td>
+            <td class="p-2 border-t">${h.last_price ?? ''}</td>
+            <td class="p-2 border-t">₹${Number(h.current_value || 0).toLocaleString('en-IN')}</td>
+          `;
+          holdingsBody.appendChild(tr);
+        });
+
+        // allocation chart
+        const alloc = j.allocations || {};
+        const labels = Object.keys(alloc);
+        const values = Object.values(alloc);
+
+        if (allocChart) {
+          allocChart.destroy();
+          allocChart = null;
+        }
+        if (labels.length) {
+          const ctx = document.getElementById('allocChart').getContext('2d');
+          allocChart = new Chart(ctx, {
+            type: 'pie',
+            data: { labels, datasets: [{ data: values }] },
+            options: { plugins: { legend: { position: 'bottom' } } }
+          });
+        }
+
+        // alerts
+        alertsList.innerHTML = '';
+        (j.alerts || []).forEach(a => {
+          const container = document.createElement('div');
+          container.className = 'p-3 border rounded';
+          container.innerHTML = `
+            <div class="flex justify-between items-start">
+              <div>
+                <div class="font-medium">${a.symbol} — ${a.sentiment}</div>
+                <div class="text-xs text-gray-500">Estimated move: ${a.estimated_pct_move}%</div>
+              </div>
+            </div>
+            <div class="mt-2 text-xs">
+              <strong>Headlines:</strong>
+              <ul class="list-disc list-inside mt-1">
+                ${ (a.headlines || []).slice(0,5).map(h => `<li>${escapeHtml(h)}</li>`).join('') }
+              </ul>
+            </div>
+          `;
+          alertsList.appendChild(container);
+        });
+
+      } catch (err) {
+        console.error('Failed to load dashboard', err);
+      }
+    }
+
+    // upload portfolio file -> /portfolio/upload (expects field 'file')
+    uploadPortfolioBtn.addEventListener('click', async () => {
+      const file = portfolioFile.files[0];
+      if (!file) {
+        alert('Select a CSV or XLSX file first');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      uploadPortfolioBtn.disabled = true;
+      uploadPortfolioBtn.textContent = 'Uploading...';
+      try {
+        const res = await fetch('/portfolio/upload', { method: 'POST', body: fd });
+        const j = await res.json();
+        if (res.ok && j.success) {
+          // refresh view with returned dashboard if present
+          if (j.dashboard) {
+            // small optimization: if backend returned dashboard payload, render it directly
+            // but to keep behaviour consistent, call loadDashboard again
+            await loadDashboard();
+          } else {
+            await loadDashboard();
+          }
+        } else {
+          alert(j.error || JSON.stringify(j));
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Upload failed — see console.');
+      } finally {
+        uploadPortfolioBtn.disabled = false;
+        uploadPortfolioBtn.textContent = 'Upload & Save';
+        portfolioFile.value = '';
+      }
+    });
+
+    function escapeHtml(s) {
+      return (s || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    }
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/auth/logout', { method: 'POST' });
+        const j = await res.json();
+        if (j.success) window.location.href = '/login';
+      } catch (err) {
+        console.error(err);
+      }
+    });
+
+    // initial load
+    loadDashboard();
+    // optional: refresh every 60s
+    setInterval(loadDashboard, 60 * 1000);
+  </script>
+</body>
+</html>
