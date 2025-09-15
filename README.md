@@ -116,7 +116,7 @@ Here are some example pages from **SEBI Saathi**:
 
 ![Analyzer Page](financial_bot/screenshots/ipo.png)
 
-*(Place your actual screenshots in a `screenshots/` folder in the repo and update these paths.)*
+
 
 ---
 
