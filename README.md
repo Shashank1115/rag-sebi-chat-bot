@@ -51,8 +51,8 @@ sebi2/
 ### 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/sebi-saathi.git
-cd sebi-saathi/sebi2
+git clone https://github.com/Shashank1115/rag-sebi-chat-bot
+cd financial_bot
 ```
 
 ### 2️⃣ Setup Environment
