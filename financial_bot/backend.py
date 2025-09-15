@@ -311,6 +311,24 @@ def safe_load_json(path):
     except Exception as e:
         logger.warning(f"Failed to load {path}: {e}")
         return []
+def get_user_id_str():
+    """
+    Return a string user id if the user is logged in, otherwise None.
+    Prefer Flask-Login current_user, fall back to session['user_id'].
+    """
+    try:
+        uid = None
+        # prefer flask-login
+        if current_user and getattr(current_user, "is_authenticated", False):
+            uid = current_user.id
+        # fallback to session
+        if not uid:
+            uid = session.get('user_id')
+    except Exception:
+        uid = session.get('user_id')
+    if uid is None:
+        return None
+    return str(uid)
 
 # -----------------------
 # Embedding fallback helpers (LRU cache + local model)
@@ -444,6 +462,11 @@ def index():
     if 'anon_id' not in session:
         session['anon_id'] = os.urandom(8).hex()
     return render_template('index.html')
+@app.route('/dashboard')
+@login_required
+def dashboard_page():
+    return render_template('dashboard.html')
+
 
 @app.route('/sebi/circulars')
 def sebi_circulars():
@@ -511,16 +534,20 @@ def ask():
     data = request.get_json(force=True, silent=True) or {}
     question = data.get('question', '')
     search_scope = data.get('scope', 'all')
-    user_id = session.get('user_id')
 
     if not question:
         return jsonify({'error': 'No question provided.'}), 400
 
     try:
-        docs = []
-        user_vector_store_path = os.path.join(USER_DATA_PATH, user_id or '', "vector_store")
+        # get a string user id (or None)
+        uid_str = get_user_id_str()
+        user_vector_store_path = None
+        if uid_str:
+            user_vector_store_path = os.path.join(USER_DATA_PATH, uid_str, "vector_store")
 
-        if search_scope == 'user_only' and os.path.exists(user_vector_store_path):
+        docs = []
+        # If user-only search requested and user vector store exists, use it
+        if search_scope == 'user_only' and user_vector_store_path and os.path.exists(user_vector_store_path):
             try:
                 docs = similarity_search_with_fallback(question, k=4, user_vector_store_path=user_vector_store_path)
             except Exception as e:
@@ -540,6 +567,7 @@ def ask():
     except Exception:
         logger.exception("--- AN ERROR OCCURRED IN /ask ---")
         return jsonify({'error': 'A server error occurred.'}), 500
+
 
 @app.route('/upload_and_ingest', methods=['POST'])
 @login_required
@@ -591,9 +619,10 @@ def delete_user_file():
     user_id = data.get('user_id', session.get('user_id'))
     if not all([filename, user_id]):
         return jsonify({'error': 'Missing filename or user session'}), 400
+    uid_str = str(user_id)
+    user_docs_path = os.path.join(USER_DATA_PATH, uid_str, "docs")
+    user_vector_store_path = os.path.join(USER_DATA_PATH, uid_str, "vector_store")
 
-    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
-    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id, "vector_store")
     file_to_delete = os.path.join(user_docs_path, filename)
 
     try:
