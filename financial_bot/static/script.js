@@ -220,7 +220,7 @@
 
     // ------------------------------
     // Portfolio upload
-    // ------------------------------
+    // ---------------------- --------
  // Portfolio upload -> POST /analyze expects form field name "portfolioFile"
 const handlePortfolioUpload = async () => {
   const file = portfolioFileInput && portfolioFileInput.files && portfolioFileInput.files[0];
@@ -283,23 +283,276 @@ const handlePortfolioUpload = async () => {
 };
 
 
-    function createPortfolioPage(md, chartData = {}, holdings = []) {
-      // (same function body as before)
-      // We'll reuse the existing function you had for portfolio page creation.
-      // To keep script concise here, call the original implementation (you already have it above in your project).
-      // But for safety, if not present, fallback to a minimal page.
-      try {
-        // If the large createPortfolioPage implementation exists in global scope use that
-        if (typeof window.__createPortfolioPageImpl === 'function') {
-          return window.__createPortfolioPageImpl(md, chartData, holdings);
-        }
-      } catch (e) {
-        console.warn('createPortfolioPage helper not found, using simple fallback', e);
+    // function createPortfolioPage(md, chartData = {}, holdings = []) {
+    //   // (same function body as before)
+    //   // We'll reuse the existing function you had for portfolio page creation.
+    //   // To keep script concise here, call the original implementation (you already have it above in your project).
+    //   // But for safety, if not present, fallback to a minimal page.
+    //   try {
+    //     // If the large createPortfolioPage implementation exists in global scope use that
+    //     if (typeof window.__createPortfolioPageImpl === 'function') {
+    //       return window.__createPortfolioPageImpl(md, chartData, holdings);
+    //     }
+    //   } catch (e) {
+    //     console.warn('createPortfolioPage helper not found, using simple fallback', e);
+    //   }
+    //   // Simple fallback:
+    //   const analysisHtml = converter.makeHtml(md || '');
+    //   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Portfolio Analysis</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div>${analysisHtml}</div><script>console.log('fallback page');</script></body></html>`;
+    // }
+    function createPortfolioPage(md, chartData) {
+  // We'll embed the converter logic inside the generated page so the new window can convert again.
+  const chartJson = JSON.stringify(chartData || {});
+  const mdEscaped = (md || '').replace(/`/g, '\\`').replace(/\$/g, '\\$'); // escape for template literal
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Portfolio Analysis - SEBI Saathi</title>
+<script src="https://cdn.jsdelivr.net/npm/showdown/dist/showdown.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--card-bg:#fff;--muted:#6b7280;}
+  body{font-family:'Inter',sans-serif;background:linear-gradient(180deg,#f8fafc 0%,#ffffff 100%);color:#111827;margin:0;padding:0;}
+  .container{max-width:1160px;margin:32px auto;padding:0 18px;}
+  .card{background:var(--card-bg);border:1px solid #e6edf3;border-radius:12px;padding:18px;box-shadow:0 6px 18px rgba(12,24,40,0.04);}
+  .k-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:13px;align-items:center;}
+  .k-legend > span{display:flex;align-items:center;gap:8px}
+  .legend-swatch{width:14px;height:10px;border-radius:3px;display:inline-block}
+  /* composition table styling */
+  .composition-table{width:100%;border-collapse:separate;border-spacing:0 6px;font-size:0.95rem}
+  .composition-table thead th{background:#f3f4f6;padding:10px;border-radius:8px;text-align:left;color:#111827;border:1px solid #e6edf3}
+  .composition-table tbody tr{background:#fff}
+  .composition-table td{padding:10px;border:1px solid #eef2f6}
+  .composition-table tbody tr:nth-child(odd){background:#fbfdff}
+  .composition-table tbody tr:hover{background:#f1f9ff;transform:translateX(2px);transition:all .12s ease}
+  .chart-wrapper{display:flex;gap:20px;align-items:flex-start}
+  .chart-box{flex:0 0 48%;min-height:420px;display:flex;align-items:center;justify-content:center}
+  .text-box{flex:1;max-height:420px;overflow:auto;padding-right:8px}
+  /* small screen fallback */
+  @media (max-width:900px){
+    .chart-wrapper{flex-direction:column}
+    .chart-box{flex-basis:auto;width:100%;min-height:300px}
+    .text-box{max-height:none}
+  }
+</style>
+</head>
+<body>
+  <header class="bg-white border-b">
+    <div class="container flex items-center justify-between py-3">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
+        <div>
+          <div style="font-weight:700;color:#374151">SEBI Saathi — Portfolio Analysis</div>
+          <div style="font-size:12px;color:var(--muted)">AI-powered insights for your investments</div>
+        </div>
+      </div>
+      <button onclick="window.print()" class="bg-green-600 text-white px-3 py-1 rounded-md text-sm">Export Report</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <!-- main column -->
+      <section class="lg:col-span-3 space-y-6">
+        <div class="card">
+          <h2 class="text-lg font-semibold mb-4">AI-Powered Analysis</h2>
+          <div class="chart-wrapper">
+            <div class="chart-box">
+              <canvas id="portfolioChart" style="width:100%;height:100%"></canvas>
+            </div>
+
+            <div class="text-box" id="analysis-text">
+              <!-- converted markdown will appear here -->
+            </div>
+          </div>
+
+          <div class="k-legend" id="chart-legend"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="text-md font-semibold mb-2">Portfolio Composition</h3>
+          <div id="composition-table" class="overflow-x-auto">
+            <!-- table will be injected here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- sidebar -->
+      <aside class="lg:col-span-1 space-y-4">
+        <div class="card">
+          <h4 class="font-semibold mb-2">Quick Actions</h4>
+          <a href="/" class="text-indigo-600 block mb-1">← Back to Chat</a>
+          <a href="/dashboard" class="text-purple-600 block mb-1">📊 Dashboard</a>
+        </div>
+
+        <div class="card">
+          <h4 class="font-semibold mb-2">Analysis Info</h4>
+          <div class="text-sm text-gray-700">
+            <div class="flex justify-between"><span>Generated</span><span class="font-medium">Just now</span></div>
+            <div class="flex justify-between"><span>Model</span><span class="font-medium text-indigo-600">SEBI AI</span></div>
+            <div class="flex justify-between"><span>Confidence</span><span class="font-medium text-green-600">High</span></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+<script>
+  (function(){
+    // Create converter and convert markdown to HTML in this new window
+    const converter = new showdown.Converter({tables:true, ghCompatibleHeaderId:true, tasklists:true});
+    const md = \`${mdEscaped}\`;
+    const fullHtml = converter.makeHtml(md || '');
+
+    // Insert the converted HTML into analysis-text
+    const analysisDiv = document.getElementById('analysis-text');
+    analysisDiv.innerHTML = fullHtml || '<p class="text-gray-500">No analysis returned.</p>';
+
+    // Extract a <table> element if present and move it to composition table
+    (function extractTable() {
+      const table = analysisDiv.querySelector('table');
+      const comp = document.getElementById('composition-table');
+      if (table) {
+        // clone and style
+        const t = table.cloneNode(true);
+        // add class/styling
+        t.className = 'composition-table';
+        // Remove table from analysis text
+        table.remove();
+        // Optionally transform header cells to nice header
+        comp.innerHTML = '';
+        comp.appendChild(t);
+      } else {
+        // If no table found, try to detect pipe-style markdown table converted to <pre> or code:
+        // show friendly message
+        comp.innerHTML = '<p class="text-gray-500">No composition data found.</p>';
       }
-      // Simple fallback:
-      const analysisHtml = converter.makeHtml(md || '');
-      return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Portfolio Analysis</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div>${analysisHtml}</div><script>console.log('fallback page');</script></body></html>`;
-    }
+    })();
+
+    // Build chart using chartData passed from opener
+    const chartData = ${chartJson};
+    // Prepare color palette (repeatable)
+    const palette = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#06b6d4','#f97316','#64748b','#a78bfa','#60a5fa'];
+    const labels = Object.keys(chartData || {});
+    const values = Object.values(chartData || {}).map(v => Number(v) || 0);
+    const colors = labels.map((_,i)=> palette[i % palette.length]);
+
+    // create chart with responsive sizing
+    const ctx = document.getElementById('portfolioChart').getContext('2d');
+    // destroy previous if exists (just in case)
+    if (window._popupChart) try{ window._popupChart.destroy(); } catch(e) {}
+    window._popupChart = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderColor: '#ffffff',
+          borderWidth: 2
+        }]
+      },
+      options: {
+        cutout: '58%',
+        plugins: {
+          legend: { display: false },
+          tooltip: { mode: 'index' }
+        },
+        maintainAspectRatio: false,
+        responsive: true
+      }
+    });
+
+    // Render a friendly legend under chart
+    (function renderLegend(){
+      const legendContainer = document.getElementById('chart-legend');
+      legendContainer.innerHTML = '';
+      labels.forEach((lbl, idx) => {
+        const span = document.createElement('span');
+        const sw = document.createElement('i');
+        sw.className = 'legend-swatch';
+        sw.style.background = colors[idx];
+        span.appendChild(sw);
+        const text = document.createElement('span');
+        text.textContent = lbl;
+        span.appendChild(text);
+        legendContainer.appendChild(span);
+      });
+    })();
+
+    // If the composition table exists and has numeric columns, add a total row & stripe formatting (improve)
+    (function enhanceTable(){
+      const comp = document.getElementById('composition-table');
+      const tbl = comp.querySelector('table');
+      if (!tbl) return;
+      // ensure thead/tbody exist
+      let thead = tbl.querySelector('thead');
+      let tbody = tbl.querySelector('tbody');
+      if (!thead) {
+        // try to make first row a header if table was simple
+        const firstRow = tbl.querySelector('tr');
+        if (firstRow) {
+          thead = document.createElement('thead');
+          thead.appendChild(firstRow.cloneNode(true));
+          // remove first original row from table (we'll move it)
+          firstRow.remove();
+          tbl.insertBefore(thead, tbl.firstChild);
+        }
+      }
+      if (!tbody) {
+        tbody = document.createElement('tbody');
+        // move remaining rows into tbody
+        Array.from(tbl.querySelectorAll('tr')).forEach(r => tbody.appendChild(r));
+        tbl.appendChild(tbody);
+      }
+      // add accessible classes to cells
+      Array.from(tbl.querySelectorAll('th')).forEach(th => th.style.padding = '10px');
+      Array.from(tbl.querySelectorAll('td')).forEach(td => td.style.padding = '10px');
+
+      // Optional: compute totals for numeric last column if obvious
+      try {
+        const lastColIndex = Math.max(0, tbl.querySelectorAll('thead th').length - 1);
+        let sum = 0;
+        let count = 0;
+        Array.from(tbody.querySelectorAll('tr')).forEach(tr => {
+          const cells = tr.querySelectorAll('td');
+          if (cells && cells.length > lastColIndex) {
+            const v = Number(cells[lastColIndex].textContent.replace(/[₹, ]/g,'')) || 0;
+            sum += v;
+            count++;
+          }
+        });
+        if (count > 0 && sum > 0) {
+          const tfoot = document.createElement('tfoot');
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = Math.max(1, lastColIndex);
+          td.textContent = 'Total';
+          td.style.fontWeight = '600';
+          td.style.padding = '10px';
+          const td2 = document.createElement('td');
+          td2.textContent = new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:0}).format(sum);
+          td2.style.fontWeight = '600';
+          td2.style.padding = '10px';
+          tr.appendChild(td);
+          tr.appendChild(td2);
+          tfoot.appendChild(tr);
+          tbl.appendChild(tfoot);
+        }
+      } catch(e){ /* ignore */ }
+    })();
+
+  })();
+</script>
+</body>
+</html>`;
+}
+
 
     // If you included the full createPortfolioPage implementation in the HTML global,
     // expose it for the function above to call:
