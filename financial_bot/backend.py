@@ -23,14 +23,18 @@ from datetime import datetime
 import urllib.parse
 import time
 import logging
-
+import pathlib
+import re
 import pandas as pd
 import yfinance as yf
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from urllib.parse import unquote, quote
+from sqlalchemy import func
+from slugify import slugify  
 
 from flask import (
-    Flask, request, jsonify, render_template, send_from_directory, session
+    Flask, request, jsonify, render_template, send_from_directory, session ,Response,url_for,render_template_string
 )
 from flask_cors import CORS
 
@@ -146,6 +150,147 @@ class Holding(db.Model):
     portfolio_id = db.Column(db.Integer, db.ForeignKey("portfolios.id"), nullable=False)
 
     portfolio = db.relationship("Portfolio", back_populates="holdings")
+
+
+try:
+    from slugify import slugify
+except Exception:
+    def slugify(s):
+        # Minimal fallback - replace non-alphanumerics with hyphens
+        if not s:
+            return ""
+        return "".join(c if c.isalnum() else "-" for c in str(s)).strip("-").lower()
+
+class IPOReport(db.Model):
+    __tablename__ = "ipo_reports"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    title = db.Column(db.String(512))
+    filename = db.Column(db.String(512), nullable=True)          # original uploaded filename (if any)
+    content_md = db.Column(db.Text)                              # markdown report returned by LLM / fallback
+    raw_text = db.Column(db.Text)                                # extracted raw text from PDF
+    excerpt = db.Column(db.String(512), nullable=True)           # short excerpt / title guess
+    heuristic_meta = db.Column(db.Text, nullable=True)           # JSON-dumped heuristic facts
+    checklist = db.Column(db.Text, nullable=True)                # JSON-dumped per-check results
+    overall_score = db.Column(db.Float, nullable=True)           # normalized score (e.g. 0-100)
+    sebi_score = db.Column(db.Float, nullable=True)              # (optional) earlier schema
+    sebi_checks = db.Column(db.JSON, nullable=True)              # legacy per-check results (keeps compatibility)
+    llm_score = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship("User", backref="ipo_reports")
+
+def _ensure_user_ipo_dir(user_id):
+    base = os.path.join(USER_DATA_PATH, str(user_id), "ipo_reports")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
+                          sebi_score=None, sebi_checks=None, llm_score=None,
+                          heuristic_meta=None, checklist=None, overall_score=None):
+    """
+    Persist IPOReport; returns created IPOReport.id
+    """
+    try:
+        rpt = IPOReport(
+            user_id=user_id,
+            title=(title or (filename or "IPO Report"))[:512],
+            filename=(filename or None),
+            content_md=(content_md or ""),
+            raw_text=(raw_text or "")[:250000],
+            excerpt=(raw_text or "")[:120],
+            heuristic_meta=json.dumps(heuristic_meta or {}),
+            checklist=json.dumps(checklist or {}),
+            overall_score=(float(overall_score) if overall_score is not None else None),
+            sebi_score=(float(sebi_score) if sebi_score is not None else None),
+            sebi_checks=(sebi_checks if sebi_checks is not None else None),
+            llm_score=(int(llm_score) if llm_score is not None else None)
+        )
+        db.session.add(rpt)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("DB commit failed while saving IPOReport")
+        raise
+
+    # also save a JSON copy to disk for quick inspection (non-fatal)
+    try:
+        base = _ensure_user_ipo_dir(user_id)
+        fname = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{slugify(rpt.title)[:120] or 'report'}.json"
+        path = os.path.join(base, fname)
+        with open(path, 'w', encoding='utf8') as fh:
+            json.dump({
+                "id": rpt.id,
+                "user_id": rpt.user_id,
+                "title": rpt.title,
+                "filename": rpt.filename,
+                "created_at": rpt.created_at.isoformat(),
+                "sebi_score": rpt.sebi_score,
+                "sebi_checks": rpt.sebi_checks,
+                "heuristic_meta": json.loads(rpt.heuristic_meta or "{}"),
+                "checklist": json.loads(rpt.checklist or "{}"),
+                "overall_score": rpt.overall_score,
+                "llm_score": rpt.llm_score,
+                "content_md": rpt.content_md
+            }, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Failed to write IPO report JSON file to disk (non-fatal).")
+
+    return rpt.id
+
+def list_user_ipo_reports(user_id):
+    rows = IPOReport.query.filter_by(user_id=user_id).order_by(IPOReport.created_at.desc()).all()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.id,
+            "title": r.title,
+            "filename": r.filename,
+            "created_at": r.created_at.isoformat(),
+            "overall_score": r.overall_score,
+            "sebi_score": r.sebi_score,
+            "llm_score": r.llm_score
+        })
+    return out
+
+def get_user_ipo_report(user_id, report_id):
+    r = IPOReport.query.filter_by(user_id=user_id, id=report_id).first()
+    if not r:
+        return None
+    try:
+        return {
+            "id": r.id,
+            "title": r.title,
+            "filename": r.filename,
+            "created_at": r.created_at.isoformat(),
+            "content_md": r.content_md,
+            "raw_text": r.raw_text,
+            "excerpt": r.excerpt,
+            "heuristic_meta": json.loads(r.heuristic_meta or "{}"),
+            "checklist": json.loads(r.checklist or "{}"),
+            "overall_score": r.overall_score,
+            "sebi_score": r.sebi_score,
+            "sebi_checks": r.sebi_checks,
+            "llm_score": r.llm_score
+        }
+    except Exception:
+        logger.exception("Failed to deserialize IPO report JSON fields")
+        # Fallback: return raw strings if JSON load fails
+        return {
+            "id": r.id,
+            "title": r.title,
+            "filename": r.filename,
+            "created_at": r.created_at.isoformat(),
+            "content_md": r.content_md,
+            "raw_text": r.raw_text,
+            "excerpt": r.excerpt,
+            "heuristic_meta": r.heuristic_meta,
+            "checklist": r.checklist,
+            "overall_score": r.overall_score,
+            "sebi_score": r.sebi_score,
+            "sebi_checks": r.sebi_checks,
+            "llm_score": r.llm_score
+        }
 
 # --- Flask-Login user loader ---
 @login_manager.user_loader
@@ -397,20 +542,31 @@ def ask():
         return jsonify({'error': 'A server error occurred.'}), 500
 
 @app.route('/upload_and_ingest', methods=['POST'])
+@login_required
 def upload_and_ingest():
+    # require login using flask-login decorator; current_user is available
     file = request.files.get('userFile')
-    user_id = session.get('user_id')
+    # prefer current_user.id (flask-login)
+    try:
+        user_id = current_user.id
+    except Exception:
+        # fallback to session (older behavior)
+        user_id = session.get('user_id')
+
     if not all([file, user_id]):
         return jsonify({'error': 'Missing file or user session'}), 400
 
-    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
-    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id, "vector_store")
+    user_id_str = str(user_id)
+    user_docs_path = os.path.join(USER_DATA_PATH, user_id_str, "docs")
+    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id_str, "vector_store")
     os.makedirs(user_docs_path, exist_ok=True)
 
-    file_path = os.path.join(user_docs_path, file.filename)
+    filename = secure_filename(file.filename) or "uploaded.pdf"
+    file_path = os.path.join(user_docs_path, filename)
     file.save(file_path)
 
     try:
+        # rebuild user vector store from PDFs
         if os.path.exists(user_vector_store_path):
             shutil.rmtree(user_vector_store_path)
 
@@ -422,10 +578,11 @@ def upload_and_ingest():
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         texts = text_splitter.split_documents(documents)
         Chroma.from_documents(texts, embeddings, persist_directory=user_vector_store_path)
-        return jsonify({'success': True, 'user_library': os.listdir(user_docs_path)})
+        return jsonify({'success': True, 'user_library': sorted(os.listdir(user_docs_path))})
     except Exception:
         logger.exception("--- AN ERROR OCCURRED DURING USER INGESTION ---")
         return jsonify({'error': 'Failed to process the document.'}), 500
+
 
 @app.route('/delete_user_file', methods=['POST'])
 def delete_user_file():
@@ -461,13 +618,29 @@ def delete_user_file():
 
 @app.route('/get_user_library', methods=['GET'])
 def get_user_library():
+    # user_id may be int (from session or current_user). ensure it's a string for os.path.join
     user_id = session.get('user_id')
+    # also allow logged-in user via flask-login
+    try:
+        if not user_id and current_user and getattr(current_user, 'is_authenticated', False):
+            user_id = current_user.id
+    except Exception:
+        user_id = user_id
+
     if not user_id:
         return jsonify({'user_library': []})
-    user_docs_path = os.path.join(USER_DATA_PATH, user_id, "docs")
+
+    # ensure str for path building
+    user_id_str = str(user_id)
+    user_docs_path = os.path.join(USER_DATA_PATH, user_id_str, "docs")
     if os.path.exists(user_docs_path):
-        return jsonify({'user_library': os.listdir(user_docs_path)})
+        try:
+            files = sorted(os.listdir(user_docs_path))
+        except Exception:
+            files = []
+        return jsonify({'user_library': files})
     return jsonify({'user_library': []})
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -517,6 +690,47 @@ def analyze():
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
+
+@app.route('/portfolio/history')
+@login_required
+def portfolio_history():
+    try:
+        portfolio = Portfolio.query.filter_by(user_id=current_user.id).first()
+        if not portfolio or not portfolio.holdings:
+            return jsonify({'history': []})
+
+        symbols = [h.symbol for h in portfolio.holdings]
+        end_date = datetime.today()
+        start_date = end_date - pd.DateOffset(months=6)
+
+        hist_data = {}
+        for sym in symbols:
+            try:
+                df = yf.download(sym, start=start_date, end=end_date, progress=False, interval="1wk")
+                if not df.empty:
+                    hist_data[sym] = df['Close']
+            except Exception:
+                continue
+
+        # combine into portfolio total
+        portfolio_series = None
+        for h in portfolio.holdings:
+            if h.symbol in hist_data:
+                series_val = hist_data[h.symbol] * h.quantity
+                portfolio_series = series_val if portfolio_series is None else portfolio_series.add(series_val, fill_value=0)
+
+        if portfolio_series is None:
+            return jsonify({'history': []})
+
+        history = [{'date': d.strftime('%Y-%m-%d'), 'value': round(float(v), 2)}
+                   for d, v in portfolio_series.dropna().items()]
+
+        return jsonify({'history': history})
+    except Exception as e:
+        logger.exception("Failed to compute portfolio history")
+        return jsonify({'error': str(e)}), 500
+
+
 # IPO analyzer helpers and route
 IPO_CHECKLIST = [
     ("financials", "Financial disclosures (revenue, profits, margins, debt levels)"),
@@ -556,19 +770,75 @@ def simple_rule_extract(text):
     if 'promoter' in lower:
         res['promoter_mentioned'] = True
     return res
+def parse_overall_score_from_md(md_text: str):
+    """
+    Try to find an 'Overall' score like 'Overall: Score: 18/30' or 'Score: 18/30'.
+    Returns float (e.g., 18.0) or None.
+    """
+    if not md_text:
+        return None
+    # pattern: capture something like 18/30
+    m = re.search(r'([Oo]verall[^:\n]*[:\-\s]*)(?:Score[:\s]*)?([0-9]{1,3})(?:\s*/\s*([0-9]{1,3}))', md_text)
+    if m:
+        try:
+            val = float(m.group(2))
+            denom = float(m.group(3)) if m.group(3) else None
+            # If denom present and is 30, return val (assume scale is 30). Else return raw val (caller may interpret).
+            if denom and denom != 0:
+                # normalize to out-of-30 if denom is known and not 30
+                if denom != 30:
+                    return round((val / denom) * 30.0, 2)
+                return val
+            return val
+        except Exception:
+            return None
+    # fallback: find 'Score: X/Y'
+    m2 = re.search(r'[Ss]core[:\s]*([0-9]{1,3})\s*/\s*([0-9]{1,3})', md_text)
+    if m2:
+        try:
+            return float(m2.group(1))
+        except:
+            return None
+    return None
 
+def save_ipo_report(user_id, title, content_md, excerpt, heuristic_meta_dict=None, checklist_obj=None):
+    """
+    Persist IPOReport for user. heuristic_meta_dict and checklist_obj will be JSON-dumped.
+    Returns the saved IPOReport object.
+    """
+    try:
+        meta_json = json.dumps(heuristic_meta_dict or {})
+        checklist_json = json.dumps(checklist_obj or [])
+        overall = parse_overall_score_from_md(content_md)
+        rpt = IPOReport(
+            user_id=user_id,
+            title=title or (excerpt[:120] if excerpt else "IPO report"),
+            content_md=content_md or "",
+            excerpt=(excerpt or "")[:120],
+            heuristic_meta=meta_json,
+            checklist=checklist_json,
+            overall_score=overall
+        )
+        db.session.add(rpt)
+        db.session.commit()
+        return rpt
+    except Exception:
+        logger.exception("Failed to save IPOReport to DB")
+        db.session.rollback()
+        raise
 @app.route('/ipo/analyze', methods=['POST'])
 @login_required
 def ipo_analyze():
     try:
         text = ""
+        uploaded_filename = None
         if 'ipoFile' in request.files and request.files['ipoFile'].filename:
             f = request.files['ipoFile']
-            filename = secure_filename(f.filename)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1])
+            uploaded_filename = secure_filename(f.filename)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_filename)[1])
             f.save(tmp.name)
             try:
-                if filename.lower().endswith('.pdf'):
+                if uploaded_filename.lower().endswith('.pdf'):
                     text = extract_text_from_pdf(tmp.name)
                 else:
                     with open(tmp.name, 'rb') as fh:
@@ -586,11 +856,57 @@ def ipo_analyze():
         if not text or not text.strip():
             return jsonify({'error': 'No IPO content provided.'}), 400
 
+        # basic heuristic metadata
         meta = simple_rule_extract(text)
         checklist_out = []
         for key, label in IPO_CHECKLIST:
             checklist_out.append({'key': key, 'label': label, 'status': 'Unknown', 'notes': ''})
 
+        # ---------------------------
+        # SEBI-style rule-based checks
+        # ---------------------------
+        lower = text.lower()
+        # mapping: checklist key -> list of indicative keywords/phrases
+        SEBI_KEYWORDS = {
+            "financials": ["revenue", "turnover", "net profit", "profit", "loss", "audited", "financial statements", "balance sheet", "profit and loss", "cash flow"],
+            "governance": ["promoter", "promoters", "shareholding", "board", "independent director", "chairman", "audit committee", "related party"],
+            "use_of_proceeds": ["use of proceeds", "objects of the issue", "utilisation", "utilization", "funds will be used", "proceeds of the issue"],
+            "business_risks": ["risk factors", "risks", "contingent liabilities", "litigation", "regulatory", "competition", "uncertain"],
+            "market_position": ["market share", "industry", "competition", "market position", "competitive", "growth drivers"],
+            "compliance": ["sebi", "regulatory approval", "approval from", "filing with sebi", "compliance", "disclosure", "red herring prospectus", "drhp", "rhp"]
+        }
+        # weights for scoring (sum -> 100)
+        WEIGHTS = {
+            "financials": 25,
+            "governance": 20,
+            "use_of_proceeds": 20,
+            "business_risks": 15,
+            "market_position": 10,
+            "compliance": 10
+        }
+
+        per_check = {}
+        total_score = 0.0
+        for key, label in IPO_CHECKLIST:
+            kws = SEBI_KEYWORDS.get(key, [])
+            found = False
+            reason = ""
+            for kw in kws:
+                if kw in lower:
+                    found = True
+                    reason = f"Found keyword '{kw}'"
+                    break
+            status = "Verified" if found else "Missing"
+            per_check[key] = {"label": label, "status": status, "notes": reason}
+            if found:
+                total_score += WEIGHTS.get(key, 0)
+
+        # normalize to percentage 0-100 (since WEIGHTS already sum to 100 in our mapping)
+        sebi_score = round(total_score, 2)
+
+        # ---------------------------
+        # Try LLM-based analysis (existing behavior)
+        # ---------------------------
         report_md = ""
         try:
             if llm is None:
@@ -618,6 +934,7 @@ def ipo_analyze():
             report_md = getattr(result, 'content', str(result))
         except Exception as e:
             logger.exception("LLM-based IPO analysis failed; using heuristic fallback: %s", e)
+            # fallback heuristic markdown
             parts = []
             parts.append("# IPO Quick Analysis (heuristic fallback)")
             parts.append("")
@@ -629,18 +946,8 @@ def ipo_analyze():
                 parts.append("- No clear numeric facts found in the provided excerpt.")
             parts.append("")
             parts.append("**Checklist (heuristic / not exhaustive):**")
-            for item in checklist_out:
-                label = item['label']
-                low = label.lower()
-                status = "Missing"
-                notes = ""
-                if any(w in text.lower() for w in ["profit", "revenue", "turnover", "income"]) and "financial" in low:
-                    status = "Partially Verified"
-                    notes = "Financials mentioned but not fully validated by human."
-                if "promoter" in low and ("promoter" in text.lower() or "promoters" in text.lower()):
-                    status = "Verified"
-                    notes = "Promoter/shareholding text appears in the excerpt."
-                parts.append(f"- **{label}**: **{status}**. {notes}")
+            for k, v in per_check.items():
+                parts.append(f"- **{v['label']}**: **{v['status']}**. {v['notes']}")
             parts.append("")
             parts.append("**Growth positives (heuristic):**")
             parts.append("- Could not determine automatically — provide more text or use LLM.")
@@ -648,13 +955,103 @@ def ipo_analyze():
             parts.append("**Risks (heuristic):**")
             parts.append("- Not analyzed in-depth in fallback mode.")
             parts.append("")
-            parts.append("**Overall (heuristic):** Score: 10/30 (fallback)")
+            parts.append(f"**SEBI-style compliance score (heuristic):** {sebi_score}/100")
             report_md = "\n".join(parts)
 
-        return jsonify({'ipo_report_md': report_md})
+        # Save the report for this user
+        user_id = current_user.id if current_user else session.get('user_id')
+        title_guess = None
+        # try to extract title line from text
+        first_line = (text.splitlines() or [''])[0]
+        if first_line and len(first_line.strip()) > 5:
+            title_guess = first_line.strip()[:200]
+        title = title_guess or uploaded_filename or "IPO analysis"
+
+        try:
+            new_id = save_ipo_report_to_db(
+                user_id=user_id,
+                title=title,
+                filename=uploaded_filename,
+                content_md=report_md,
+                raw_text=text,
+                sebi_score=sebi_score,
+                sebi_checks=per_check,
+                llm_score=None
+            )
+        except Exception:
+            logger.exception("Failed to save IPO report to DB")
+            new_id = None
+
+        return jsonify({'ipo_report_md': report_md, 'report_id': new_id, 'sebi_score': sebi_score})
     except Exception:
         app.logger.error("IPO analyze error:\n" + traceback.format_exc())
         return jsonify({'error': 'Internal server error during IPO analysis.'}), 500
+
+
+@app.route('/ipo/list', methods=['GET'])
+@login_required
+def ipo_list():
+    try:
+        user_id = current_user.id
+        reports = list_user_ipo_reports(user_id)
+        return jsonify({'reports': reports})
+    except Exception:
+        logger.exception("Failed to list IPO reports")
+        return jsonify({'error': 'Failed to retrieve reports'}), 500
+
+@app.route('/ipo/get/<int:report_id>', methods=['GET'])
+@login_required
+def ipo_get(report_id):
+    r = IPOReport.query.get(report_id)
+    if not r or r.user_id != current_user.id:
+        return jsonify({'error': 'report not found'}), 404
+    try:
+        return jsonify({
+            'id': r.id,
+            'title': r.title,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+            'content_md': r.content_md,
+            'heuristic_meta': json.loads(r.heuristic_meta or "{}"),
+            'checklist': json.loads(r.checklist or "[]"),
+            'overall_score': r.overall_score
+        })
+    except Exception:
+        logger.exception("Failed to load IPO report")
+        return jsonify({'error': 'Failed to load report'}), 500
+
+@app.route('/ipo/compare', methods=['GET'])
+@login_required
+def ipo_compare():
+    ids_raw = request.args.get('ids', '')
+    if not ids_raw:
+        return jsonify({'error': 'ids query param required (comma-separated)'}), 400
+    try:
+        ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()]
+    except Exception:
+        return jsonify({'error': 'Invalid ids param'}), 400
+
+    reports = IPOReport.query.filter(IPOReport.id.in_(ids), IPOReport.user_id == current_user.id).all()
+    if not reports:
+        return jsonify({'error': 'No reports found for given ids'}), 404
+
+    cmp_rows = []
+    for r in reports:
+        try:
+            meta = json.loads(r.heuristic_meta or "{}")
+        except:
+            meta = {}
+        cmp_rows.append({
+            'id': r.id,
+            'title': r.title,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+            'revenue': meta.get('revenue'),
+            'profit': meta.get('profit'),
+            'debt': meta.get('debt'),
+            'promoter_mentioned': meta.get('promoter_mentioned', False),
+            'overall_score': r.overall_score
+        })
+    return jsonify({'comparison': cmp_rows})
+
 
 @app.route('/quiz/next_question', methods=['GET'])
 def next_quiz_question():
@@ -691,53 +1088,167 @@ def calculate_sip():
     except Exception as e:
         return jsonify({'error': f'Invalid input. {e}'}), 400
 
+ALLOWED_SOURCE_EXTS = {'.pdf', '.txt', '.csv'}
+
 @app.route('/sources', methods=['GET'])
 def list_sources():
     try:
         if not os.path.isdir(RAG_SOURCES_PATH):
             return jsonify({'sources': [], 'error': 'rag_sources directory not found'}), 200
 
-        allowed_exts = {'.pdf', '.txt', '.csv'}
+        allowed_exts = ALLOWED_SOURCE_EXTS
         files = []
-        for entry in os.listdir(RAG_SOURCES_PATH):
+        for entry in sorted(os.listdir(RAG_SOURCES_PATH), key=lambda s: s.lower()):
             ext = os.path.splitext(entry)[1].lower()
             if ext in allowed_exts:
-                files.append({'name': entry, 'url': f"/source_files/{entry}"})
-        files.sort(key=lambda x: x['name'].lower())
+                # build viewer/raw URLs with percent-encoded filename
+                enc = quote(entry, safe='')
+                viewer_url = url_for('source_viewer', filename=enc, _external=False)
+                raw_url = url_for('serve_source_file', filename=enc, _external=False)
+                files.append({'name': entry, 'viewer_url': viewer_url, 'url': raw_url})
         return jsonify({'sources': files})
     except Exception:
         return jsonify({'sources': [], 'error': traceback.format_exc()}), 500
 
+
+def _resolve_source_path(encoded_filename: str):
+    """
+    Decode percent-encoded filename, preserve filename characters,
+    ensure the resolved path is inside RAG_SOURCES_PATH and exists.
+    Returns the absolute file path if valid, otherwise None.
+    """
+    try:
+        fname = unquote(encoded_filename or '')
+        fname = fname.strip()
+        if not fname:
+            return None
+
+        # resolve candidate path
+        candidate = os.path.abspath(os.path.join(RAG_SOURCES_PATH, fname))
+
+        # ensure candidate is inside RAG_SOURCES_PATH to prevent traversal
+        base_abs = os.path.abspath(RAG_SOURCES_PATH)
+        if not (candidate == base_abs or candidate.startswith(base_abs + os.sep)):
+            return None
+
+        if not os.path.exists(candidate) or not os.path.isfile(candidate):
+            return None
+
+        return candidate
+    except Exception:
+        return None
+
+
 @app.route('/source_files/<path:filename>', methods=['GET'])
 def serve_source_file(filename):
-    allowed_exts = {'.pdf', '.txt', '.csv'}
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in allowed_exts:
-        return jsonify({'error': 'Only PDF, TXT, or CSV files are allowed.'}), 400
+    """
+    Serve files located in RAG_SOURCES_PATH. 'filename' is percent-encoded in the URL.
+    Uses _resolve_source_path to find the real file on disk.
+    """
     try:
-        return send_from_directory(RAG_SOURCES_PATH, filename, as_attachment=False)
-    except FileNotFoundError:
-        return jsonify({'error': 'File not found'}), 404
+        full_path = _resolve_source_path(filename)
+        if not full_path:
+            return jsonify({'error': 'File not found'}), 404
+
+        basename = os.path.basename(full_path)
+        ext = os.path.splitext(basename)[1].lower()
+        if ext not in ALLOWED_SOURCE_EXTS:
+            return jsonify({'error': 'Only PDF, TXT, or CSV files are allowed.'}), 400
+
+        if ext == '.pdf':
+            directory = os.path.dirname(full_path)
+            resp = send_from_directory(directory, basename, as_attachment=False)
+            resp.headers['Content-Disposition'] = f'inline; filename="{basename}"'
+            return resp
+
+        # txt / csv -> wrap in simple HTML so it displays nicely in browser
+        if ext in ('.txt', '.csv'):
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as fh:
+                text = fh.read()
+            html = f"""
+            <!doctype html>
+            <html>
+              <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width,initial-scale=1"/>
+                <title>{basename}</title>
+                <style>body{{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; padding:1rem}} pre{{white-space:pre-wrap;word-wrap:break-word}}</style>
+              </head>
+              <body>
+                <a href="/sources">← Back to sources</a>
+                <h3>{basename}</h3>
+                <pre>{text}</pre>
+              </body>
+            </html>
+            """
+            return Response(html, mimetype='text/html')
+
+        return jsonify({'error': 'Unsupported file type'}), 400
+
+    except Exception:
+        app.logger.exception("Error serving source file")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/source_view/<path:filename>', methods=['GET'])
+def source_viewer(filename):
+    """
+    Viewer page that embeds the raw file URL (served by /source_files/<filename>) in an iframe.
+    """
+    try:
+        full_path = _resolve_source_path(filename)
+        if not full_path:
+            return jsonify({'error': 'File not found'}), 404
+
+        basename = os.path.basename(full_path)
+        file_url = url_for('serve_source_file', filename=quote(basename, safe=''), _external=False)
+
+        viewer_html = f"""
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>Viewing: {basename}</title>
+            <style>body,html{{height:100%;margin:0}} .topbar{{padding:8px;background:#f3f4f6;border-bottom:1px solid #e5e7eb}} .iframe-wrap{{height:calc(100vh - 52px)}}</style>
+          </head>
+          <body>
+            <div class="topbar">
+              <a href="/sources" style="margin-right:12px">← Back to sources</a>
+              <strong>{basename}</strong>
+              <a style="float:right" href="{file_url}" target="_blank" rel="noopener">Open raw</a>
+            </div>
+            <div class="iframe-wrap">
+              <iframe src="{file_url}" style="width:100%;height:100%;border:0;"></iframe>
+            </div>
+          </body>
+        </html>
+        """
+        return Response(viewer_html, mimetype='text/html')
+    except Exception:
+        app.logger.exception("Error building source viewer")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/register')
 def register_page():
+    # Renders the register form page
     return render_template('register.html')
 
 @app.route('/login')
 def login_page():
+    # Renders the login form page
     return render_template('login.html')
 
-@app.route('/dashboard')
-@login_required
-def dashboard_page():
-    return render_template('dashboard.html')
-
 @app.route('/auth/register', methods=['POST'])
-def register():
+def auth_register():
+    """
+    Expects JSON: { "username": "...", "password": "...", "email": "..." }
+    Returns JSON: { success: True, user_id, username } or error
+    """
     data = request.get_json(force=True, silent=True) or {}
-    username = data.get('username')
-    password = data.get('password')
-    email = data.get('email')
+    username = (data.get('username') or "").strip()
+    password = data.get('password') or ""
+    email = (data.get('email') or "").strip()
 
     if not username or not password:
         return jsonify({'error': 'username and password required'}), 400
@@ -745,23 +1256,36 @@ def register():
     if User.query.filter_by(username=username).first():
         return jsonify({'error': 'username already exists'}), 400
 
-    user = User(username=username, email=email)
-    user.set_password(password)
-    db.session.add(user)
-    db.session.commit()
+    try:
+        user = User(username=username, email=email)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
 
-    portfolio = Portfolio(name="Default Portfolio", user_id=user.id)
-    db.session.add(portfolio)
-    db.session.commit()
+        # create default portfolio
+        portfolio = Portfolio(name="Default Portfolio", user_id=user.id)
+        db.session.add(portfolio)
+        db.session.commit()
 
-    login_user(user)
-    return jsonify({'success': True, 'user_id': user.id, 'username': user.username})
+        login_user(user)                    # Flask-Login
+        session['user_id'] = user.id        # keep session key consistent for your upload endpoints
+
+        return jsonify({'success': True, 'user_id': user.id, 'username': user.username})
+    except Exception as e:
+        logger.exception("Registration failed")
+        db.session.rollback()
+        return jsonify({'error': 'Registration failed'}), 500
 
 @app.route('/auth/login', methods=['POST'])
-def login():
+def auth_login():
+    """
+    Expects JSON: { "username": "...", "password": "..." }
+    Returns JSON: { success: True, dashboard: {...} } on success
+    """
     data = request.get_json(force=True, silent=True) or {}
-    username = data.get('username')
-    password = data.get('password')
+    username = (data.get('username') or "").strip()
+    password = data.get('password') or ""
+
     if not username or not password:
         return jsonify({'error': 'username and password required'}), 400
 
@@ -769,14 +1293,23 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({'error': 'invalid credentials'}), 401
 
-    login_user(user)
-    payload = build_dashboard_payload(user.id)
-    return jsonify({'success': True, 'dashboard': payload})
+    try:
+        login_user(user)
+        session['user_id'] = user.id   # IMPORTANT: set this for other endpoints using session
+        payload = build_dashboard_payload(user.id)
+        return jsonify({'success': True, 'dashboard': payload, 'user_id': user.id, 'username': user.username})
+    except Exception:
+        logger.exception("Login failed")
+        return jsonify({'error': 'Login failed'}), 500
 
 @app.route('/auth/logout', methods=['POST'])
 @login_required
-def logout():
-    logout_user()
+def auth_logout():
+    try:
+        logout_user()
+        session.pop('user_id', None)
+    except Exception:
+        pass
     return jsonify({'success': True})
 
 def upsert_portfolio_from_df(user_id, df, portfolio_name="Default Portfolio"):
@@ -849,8 +1382,74 @@ def get_portfolio():
 POSITIVE_WORDS = {"beats","upgrade","raised","approved","good","strong","positive","gain","growth","outperform","record","profit","surge"}
 NEGATIVE_WORDS = {"downgrade","cut","loss","falls","fall","decline","weak","negative","recall","scandal","fraud","drops","hit","miss"}
 
-_price_cache = {}
-CACHE_TTL = 300  # seconds (5 min)
+
+_price_cache = {}         # in-memory cache for stock prices
+CACHE_TTL = 900  
+HEADLINES_CACHE = {}
+HEADLINES_TTL = 900  # 15 minutes
+NEWSAPI_COOLDOWN = 900  # 15 minutes
+_last_newsapi_fail = 0
+
+def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
+    global _last_newsapi_fail
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return []
+
+    cache_key = f"{symbol}:{max_headlines}"
+    now = time.time()
+    if cache_key in HEADLINES_CACHE and (now - HEADLINES_CACHE[cache_key]["time"]) < HEADLINES_TTL:
+        return HEADLINES_CACHE[cache_key]["payload"]
+
+    headlines = []
+
+    # --- Try NewsAPI if not in cooldown ---
+    if api_key and (now - _last_newsapi_fail) > NEWSAPI_COOLDOWN:
+        try:
+            params = {
+                "q": f'"{symbol}" OR {symbol} stock OR {symbol} share OR {symbol} company',
+                "language": "en",
+                "sortBy": "publishedAt",
+                "pageSize": max_headlines,
+                "apiKey": api_key,
+            }
+            r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=8)
+            if r.status_code == 429:
+                app.logger.warning(f"NewsAPI rate-limited for {symbol}. Entering cooldown.")
+                _last_newsapi_fail = now
+            else:
+                r.raise_for_status()
+                data = r.json()
+                if data.get("status") == "ok":
+                    for a in data.get("articles", [])[:max_headlines]:
+                        title = (a.get("title") or "").strip()
+                        desc = (a.get("description") or "").strip()
+                        combined = (title + " — " + desc).strip(" — ")
+                        if combined:
+                            headlines.append(combined)
+        except Exception as e:
+            app.logger.warning(f"NewsAPI error for {symbol}: {e}")
+            _last_newsapi_fail = now
+
+    # --- Fallback: Google News ---
+    if not headlines:
+        try:
+            query = urllib.parse.quote_plus(f"{symbol} stock")
+            url = f"https://www.google.com/search?q={query}&tbm=nws"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(url, headers=headers, timeout=8)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+            for g in soup.select("div.dbsr")[:max_headlines]:
+                title_el = g.select_one("div.JheGif, h3")
+                if title_el:
+                    headlines.append(title_el.get_text(strip=True))
+        except Exception as e:
+            app.logger.warning(f"Google scrape failed for {symbol}: {e}")
+
+    HEADLINES_CACHE[cache_key] = {"time": now, "payload": headlines}
+    return headlines
+
 
 def fetch_latest_prices(symbols):
     out = {}
@@ -867,17 +1466,25 @@ def fetch_latest_prices(symbols):
         try:
             data = yf.download(need_fetch, period="1d", group_by="ticker", progress=False)
             for sym in need_fetch:
+                price = None
                 try:
                     if sym in data and not data[sym].empty:
-                        last = data[sym]["Close"].iloc[-1]
-                        price = float(last)
+                        price = float(data[sym]["Close"].iloc[-1])
                     elif "Close" in data and not data.empty:
-                        last = data["Close"].iloc[-1]
-                        price = float(last)
-                    else:
-                        price = None
+                        price = float(data["Close"].iloc[-1])
                 except Exception:
-                    price = None
+                    pass
+
+                # --- fallback: try BSE if NSE fails ---
+                if price is None and sym.endswith(".NS"):
+                    alt = sym.replace(".NS", ".BO")
+                    try:
+                        alt_data = yf.download(alt, period="1d", progress=False)
+                        if not alt_data.empty:
+                            price = float(alt_data["Close"].iloc[-1])
+                            app.logger.warning(f"Fallback used: {sym} → {alt}")
+                    except Exception as e:
+                        app.logger.warning(f"Fallback failed for {sym}: {e}")
 
                 _price_cache[sym] = {"price": price, "time": now}
                 out[sym] = price
@@ -889,53 +1496,6 @@ def fetch_latest_prices(symbols):
 
     return out
 
-def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
-    symbol = (symbol or "").strip()
-    if not symbol:
-        return []
-
-    if api_key:
-        try:
-            q = f'"{symbol}" OR {symbol} stock OR {symbol} share OR {symbol} company'
-            params = {
-                "q": q,
-                "language": "en",
-                "sortBy": "publishedAt",
-                "pageSize": max_headlines,
-                "apiKey": api_key
-            }
-            r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=8)
-            r.raise_for_status()
-            data = r.json()
-            if data.get("status") == "ok":
-                headlines = []
-                for a in data.get("articles", [])[:max_headlines]:
-                    title = (a.get("title") or "").strip()
-                    desc = (a.get("description") or "").strip()
-                    combined = (title + " — " + desc).strip(" — ")
-                    if combined:
-                        headlines.append(combined)
-                return headlines
-        except Exception as e:
-            app.logger.warning(f"NewsAPI error for {symbol}: {e}")
-
-    try:
-        query = urllib.parse.quote_plus(f"{symbol} stock")
-        search_url = f"https://www.google.com/search?q={query}&tbm=nws"
-        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
-        r = requests.get(search_url, headers=headers, timeout=8)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = []
-        for g in soup.select("div.dbsr")[:max_headlines]:
-            title_el = g.select_one("div.JheGif, div.JheGif.nDgy9d")
-            title = title_el.get_text(strip=True) if title_el else ""
-            if title:
-                items.append(title)
-        return items
-    except Exception as e:
-        app.logger.warning(f"Google news scrape failed for {symbol}: {e}")
-        return []
 
 @app.route('/news/<symbol>', methods=['GET'])
 @login_required

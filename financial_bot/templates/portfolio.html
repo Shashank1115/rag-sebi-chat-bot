@@ -1,361 +1,236 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Portfolio Analysis - SEBI Saathi</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .analysis-section {
-            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-            border: 1px solid #e2e8f0;
-            padding: 2.5rem;
-            border-radius: 1.5rem;
-            margin-bottom: 2rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            position: relative;
-            overflow: hidden;
-        }
-        .analysis-section::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
-            background: linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4);
-        }
-        #analysis-text h1, #analysis-text h2, #analysis-text h3 { 
-            font-weight: 700; 
-            margin-top: 2rem; 
-            margin-bottom: 1rem; 
-            color: #1f2937;
-            position: relative;
-        }
-        #analysis-text h1 { 
-            font-size: 1.75rem; 
-            background: linear-gradient(135deg, #1f2937, #4b5563);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        #analysis-text h2 { 
-            font-size: 1.5rem;
-            color: #374151;
-            border-left: 4px solid #3b82f6;
-            padding-left: 1rem;
-        }
-        #analysis-text h3 { 
-            font-size: 1.25rem;
-            color: #4b5563;
-        }
-        #analysis-text ul { 
-            list-style: none;
-            padding-left: 0;
-            margin-bottom: 1.5rem;
-        }
-        #analysis-text li { 
-            margin-bottom: 0.75rem; 
-            color: #4b5563;
-            line-height: 1.7;
-            position: relative;
-            padding-left: 2rem;
-        }
-        #analysis-text li::before {
-            content: '→';
-            position: absolute;
-            left: 0;
-            color: #3b82f6;
-            font-weight: bold;
-            font-size: 1.1rem;
-        }
-        #analysis-text p { 
-            margin-bottom: 1.25rem; 
-            color: #4b5563;
-            line-height: 1.7;
-            font-size: 1rem;
-        }
-        #analysis-text strong {
-            color: #1f2937;
-            font-weight: 600;
-            background: linear-gradient(135deg, #dbeafe, #e0e7ff);
-            padding: 0.125rem 0.375rem;
-            border-radius: 0.375rem;
-        }
-        .floating-element {
-            position: absolute;
-            opacity: 0.1;
-            pointer-events: none;
-        }
-        .card-hover {
-            transition: all 0.3s ease;
-        }
-        .card-hover:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-        }
-        .pulse-dot {
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .gradient-text {
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-    </style>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Portfolio Analysis - SEBI Saathi</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-2: #7c3aed;
+    }
+    html,body { height: 100%; font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background: linear-gradient(180deg,#f8fafc,#eef2ff); }
+    .container { max-width: 1100px; margin: 2.5rem auto; padding: 1rem; }
+    .card { background: var(--card); border-radius: 12px; padding: 1.25rem; box-shadow: 0 6px 20px rgba(2,6,23,0.04); border: 1px solid #eef2f7; }
+    .panel-title { font-weight:700; color:#0f172a; }
+    .muted { color:var(--muted); }
+    .small { font-size:0.88rem; color:var(--muted); }
+    .chart-wrap { display:flex; align-items:center; justify-content:center; padding: 1rem; }
+    table { width:100%; border-collapse:collapse; }
+    thead th { text-align:left; font-weight:600; color:#111827; padding:0.6rem 0.75rem; font-size:0.92rem; border-bottom:1px solid #eef2f7; }
+    tbody td { padding:0.6rem 0.75rem; border-bottom:1px solid #f3f4f6; font-size:0.92rem; color:#374151; }
+    .value { font-weight:600; color:#0f172a; }
+    .no-data { padding:2rem; text-align:center; color:var(--muted); }
+    .legend { display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.75rem; font-size:0.9rem; color:#374151 }
+    .legend-item { display:flex; gap:0.5rem; align-items:center; }
+    .color-dot { width:12px; height:12px; border-radius:3px; display:inline-block; }
+    @media (min-width: 1024px) { .layout { display:grid; grid-template-columns: 420px 1fr; gap:1.25rem; align-items:start; } }
+  </style>
 </head>
-<body class="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen">
-    <header class="bg-white/80 backdrop-blur-lg border-b border-gray-200/50 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center h-16">
-                <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
-                            <span class="text-white font-bold text-lg">S</span>
-                        </div>
-                        <div>
-                            <h1 class="text-xl font-bold gradient-text">SEBI Saathi IN</h1>
-                            <p class="text-xs text-gray-500">Your Financial Literacy & Compliance Copilot</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-2 bg-green-50 px-3 py-1 rounded-full">
-                        <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
-                        <span class="text-xs font-medium text-green-700">Live Analysis</span>
-                    </div>
-                    <button class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-5 5-5-5h5v-12"></path>
-                        </svg>
-                    </button>
-                    <button class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                        </svg>
-                    </button>
-                    <div class="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full ring-2 ring-white shadow-lg"></div>
-                </div>
-            </div>
+<body>
+  <div class="container">
+    <div class="card" style="margin-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div class="panel-title">Portfolio Analysis</div>
+          <div class="small muted">AI-powered insights — quick summary of portfolio health</div>
         </div>
-    </header>
-
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div class="mb-8">
-            <nav class="flex items-center space-x-2 text-sm text-gray-500 mb-6">
-                <a href="/" class="hover:text-blue-600 transition-colors">Home</a>
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                </svg>
-                <span class="text-gray-900 font-medium">Portfolio Analysis</span>
-            </nav>
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-4">
-                    <div class="w-16 h-16 bg-gradient-to-br from-blue-100 to-purple-100 rounded-2xl flex items-center justify-center shadow-lg">
-                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
-                        </svg>
-                    </div>
-                    <div>
-                        <h1 class="text-3xl font-bold text-gray-900 mb-2">Portfolio Analysis</h1>
-                        <p class="text-gray-600 text-lg">AI-powered insights for your investment portfolio</p>
-                    </div>
-                </div>
-                <div class="flex items-center space-x-3">
-                    <div class="bg-white px-4 py-2 rounded-lg shadow-sm border border-gray-200">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2 h-2 bg-blue-500 rounded-full"></div>
-                            <span class="text-sm font-medium text-gray-700">Analysis Complete</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
-            <div class="lg:col-span-3">
-                <div class="analysis-section card-hover">
-                    <div class="floating-element top-4 right-4">
-                        <svg class="w-24 h-24 text-blue-200" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
-                        </svg>
-                    </div>
-                    <div class="flex items-center space-x-4 mb-8">
-                        <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg">
-                            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
-                            </svg>
-                        </div>
-                        <div>
-                            <h2 class="text-2xl font-bold text-gray-900">AI-Powered Analysis</h2>
-                            <p class="text-gray-600">Comprehensive portfolio insights and recommendations</p>
-                        </div>
-                    </div>
-                    <div id="analysis-text" class="prose prose-gray max-w-none">
-                        {{ analysis_html|safe }}
-                    </div>
-                </div>
-            </div>
-
-            <div class="lg:col-span-1 space-y-6">
-                <div class="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/50 p-6 shadow-lg card-hover">
-                    <div class="flex items-center space-x-3 mb-6">
-                        <div class="w-8 h-8 bg-gradient-to-br from-green-400 to-blue-500 rounded-lg flex items-center justify-center">
-                            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                            </svg>
-                        </div>
-                        <h3 class="text-lg font-bold text-gray-900">Quick Actions</h3>
-                    </div>
-                    <div class="space-y-2">
-                        <a href="/" class="flex items-center space-x-3 p-3 rounded-xl hover:bg-blue-50 transition-all duration-200 group">
-                            <div class="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-200 transition-colors">
-                                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.955 8.955 0 01-2.697-.413l-3.178 1.589a1 1 0 01-1.414-1.414l1.589-3.178A8.955 8.955 0 013 12c0-4.418 3.582-8 8-8s8 3.582 8 8z"></path>
-                                </svg>
-                            </div>
-                            <span class="text-sm font-semibold text-gray-700 group-hover:text-blue-700">Back to Chat</span>
-                        </a>
-                        <a href="/dashboard" class="flex items-center space-x-3 p-3 rounded-xl hover:bg-purple-50 transition-all duration-200 group">
-                            <div class="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center group-hover:bg-purple-200 transition-colors">
-                                <svg class="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 1.79 4 4 4h8c2.21 0 4-1.79 4-4V7c0-2.21-1.79-4-4-4H8c-2.21 0-4 1.79-4 4z"></path>
-                                </svg>
-                            </div>
-                            <span class="text-sm font-semibold text-gray-700 group-hover:text-purple-700">Dashboard</span>
-                        </a>
-                        <button class="flex items-center space-x-3 p-3 rounded-xl hover:bg-green-50 transition-all duration-200 w-full text-left group">
-                            <div class="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center group-hover:bg-green-200 transition-colors">
-                                <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                </svg>
-                            </div>
-                            <span class="text-sm font-semibold text-gray-700 group-hover:text-green-700">Export Report</span>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/50 p-6 shadow-lg card-hover">
-                    <div class="flex items-center space-x-3 mb-6">
-                        <div class="w-8 h-8 bg-gradient-to-br from-orange-400 to-pink-500 rounded-lg flex items-center justify-center">
-                            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                        </div>
-                        <h3 class="text-lg font-bold text-gray-900">Analysis Info</h3>
-                    </div>
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                            <span class="text-sm text-gray-600">Generated</span>
-                            <span class="text-sm font-semibold text-gray-900">Just now</span>
-                        </div>
-                        <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                            <span class="text-sm text-gray-600">Model</span>
-                            <span class="text-sm font-semibold gradient-text">SEBI AI</span>
-                        </div>
-                        <div class="flex justify-between items-center p-3 bg-green-50 rounded-lg">
-                            <span class="text-sm text-gray-600">Confidence</span>
-                            <div class="flex items-center space-x-2">
-                                <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
-                                <span class="text-sm font-semibold text-green-700">High</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <div class="small muted">Generated: <strong style="font-weight:600;color:#059669">Just now</strong></div>
+      </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/showdown/dist/showdown.min.js"></script>
-    <script>
-      (function(){
-        let payload = null;
-        try {
-          const raw = sessionStorage.getItem('sebi_portfolio_analysis');
-          if (raw) payload = JSON.parse(raw);
-        } catch (e) { console.error('read storage', e); }
+    <div class="layout">
+      <!-- Left: Chart + Composition -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+          <div style="font-weight:700;color:#0f172a;">Portfolio Composition</div>
+          <div class="small muted">By Investment Value</div>
+        </div>
 
-        if (!payload) {
-          const container = document.getElementById('analysis-text');
-          if (container) container.innerHTML = '<p class="text-sm text-gray-500">No analysis data found. Please upload a portfolio from the main page.</p>';
-          return;
-        }
+        <div id="chartContainer" class="chart-wrap" aria-hidden="false">
+          <canvas id="compositionChart" style="max-width:380px; width:100%; height:320px;"></canvas>
+        </div>
 
-        const converter = new showdown.Converter();
-        const analysisMd = payload.analysis_markdown || '';
-        const analysisHtml = analysisMd ? converter.makeHtml(analysisMd) : (payload.analysis_html || '');
-        const chartData = payload.chart_data || {};
-        const holdings = payload.holdings || [];
+        <div id="legend" class="legend" aria-hidden="false"></div>
 
-        const analysisTextEl = document.getElementById('analysis-text');
-        if (analysisTextEl) analysisTextEl.innerHTML = analysisHtml || '<p class="text-sm text-gray-600">No narrative provided.</p>';
+        <div id="chartFallback" class="no-data" style="display:none;">No composition data available to render chart.</div>
+      </div>
 
-        try {
-          const chartWrapper = document.createElement('div');
-          chartWrapper.className = 'mb-6';
-          chartWrapper.innerHTML = '<canvas id="portfolioChart" style="max-height:360px;"></canvas>';
-          if (analysisTextEl && analysisTextEl.parentElement) {
-            analysisTextEl.parentElement.insertBefore(chartWrapper, analysisTextEl);
-          } else {
-            document.querySelector('.analysis-section')?.prepend(chartWrapper);
+      <!-- Right: Analysis Markdown & Holdings -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+          <div style="font-weight:700;color:#0f172a;">Analysis</div>
+          <div class="small muted">Narrative produced by SEBI Saathi</div>
+        </div>
+
+        <div id="analysisHtml" class="prose muted" style="line-height:1.6;"></div>
+
+        <hr style="border:none;border-top:1px solid #f1f5f9;margin:1rem 0;">
+
+        <div style="font-weight:700;margin-bottom:0.5rem;color:#0f172a">Holdings</div>
+        <div style="overflow:auto">
+          <table aria-describedby="holdings-desc">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th style="width:96px">Qty</th>
+                <th style="width:130px">Value (₹)</th>
+                <th style="width:96px">Alloc %</th>
+              </tr>
+            </thead>
+            <tbody id="holdingsBody">
+              <!-- rows injected by JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <div id="holdingsEmpty" class="no-data" style="display:none;">No holdings provided.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- libs -->
+  <script src="https://cdn.jsdelivr.net/npm/showdown/dist/showdown.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+  (function(){
+    // read payload placed in sessionStorage by the main app
+    let payload = null;
+    try {
+      const raw = sessionStorage.getItem('sebi_portfolio_analysis');
+      if (raw) payload = JSON.parse(raw);
+    } catch (e) {
+      console.error('Failed to read portfolio payload from sessionStorage', e);
+    }
+
+    // if no payload, show message and bail
+    if (!payload) {
+      document.getElementById('analysisHtml').innerHTML = '<p class="small muted">No analysis data found. Please upload a portfolio from the main page and view the report.</p>';
+      document.getElementById('chartContainer').style.display = 'none';
+      document.getElementById('chartFallback').style.display = 'block';
+      document.getElementById('holdingsEmpty').style.display = 'block';
+      return;
+    }
+
+    // convert markdown -> html for analysis section
+    const converter = new showdown.Converter({simplifiedAutoLink: true, tables: true, tasklists: true});
+    const analysisMd = payload.analysis_markdown || payload.analysis_html || '';
+    const analysisHtml = analysisMd ? converter.makeHtml(analysisMd) : (payload.analysis_html || '');
+    document.getElementById('analysisHtml').innerHTML = analysisHtml || '<p class="small muted">No narrative provided.</p>';
+
+    // prepare chart data
+    const chartData = payload.chart_data || {};
+    const labels = Object.keys(chartData);
+    const values = Object.values(chartData);
+
+    // colors (re-used for legend). Expand if you expect more categories.
+    const COLORS = ['#3b82f6','#f97316','#ef4444','#06b6d4','#10b981','#a78bfa','#9ca3af','#f59e0b','#8b5cf6','#ec4899'];
+
+    function formatCurrency(n) {
+      if (n == null || isNaN(n)) return '-';
+      return Number(n).toLocaleString('en-IN', {maximumFractionDigits:0});
+    }
+
+    // render chart or fallback
+    let chartInstance = null;
+    try {
+      if (labels.length && values.length && values.some(v => v > 0)) {
+        const ctx = document.getElementById('compositionChart').getContext('2d');
+        chartInstance = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: labels,
+            datasets: [{
+              data: values,
+              backgroundColor: COLORS.slice(0, labels.length),
+              borderColor: '#fff',
+              borderWidth: 1
+            }]
+          },
+          options: {
+            plugins: {
+              legend: { display: false }, // we will render a custom legend
+              tooltip: { callbacks: { label: function(context){ const v = context.raw || 0; return context.label + ': ₹' + formatCurrency(v); } } }
+            },
+            maintainAspectRatio: false,
+            cutout: '48%'
           }
+        });
 
-          if (chartData && Object.keys(chartData).length) {
-            const ctx = document.getElementById('portfolioChart').getContext('2d');
-            new Chart(ctx, {
-              type: 'doughnut',
-              data: {
-                labels: Object.keys(chartData),
-                datasets: [{ data: Object.values(chartData) }]
-              },
-              options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
-            });
-          } else {
-            chartWrapper.innerHTML = '<div class="p-6 text-sm text-gray-500">No chart data available.</div>';
-          }
-        } catch (e) { console.error('chart render', e); }
+        // custom legend
+        const legendEl = document.getElementById('legend');
+        legendEl.innerHTML = '';
+        labels.forEach((lab, idx) => {
+          const dot = COLORS[idx % COLORS.length];
+          const el = document.createElement('div');
+          el.className = 'legend-item';
+          el.innerHTML = `<span class="color-dot" style="background:${dot}"></span><span>${lab} — <strong class="value">₹${formatCurrency(values[idx])}</strong></span>`;
+          legendEl.appendChild(el);
+        });
+      } else {
+        document.getElementById('chartContainer').style.display = 'none';
+        document.getElementById('chartFallback').style.display = 'block';
+      }
+    } catch (e) {
+      console.error('chart render error', e);
+      document.getElementById('chartContainer').style.display = 'none';
+      document.getElementById('chartFallback').style.display = 'block';
+    }
 
-        try {
-          let holdingsBody = document.getElementById('holdingsBody');
-          if (!holdingsBody) {
-            const wrap = document.createElement('div');
-            wrap.className = 'mt-6 bg-white p-4 rounded-lg shadow-sm';
-            wrap.innerHTML = '<h3 class="font-semibold mb-2">Holdings</h3><div id="holdingsTableWrap"><table class="w-full text-sm"><thead><tr><th class="text-left pb-2">Ticker</th><th class="pb-2">Qty</th><th class="pb-2">Value (₹)</th><th class="pb-2">Allocation %</th></tr></thead><tbody id="holdingsBody"></tbody></table></div>';
-            const infoCard = document.querySelector('.lg\\:col-span-1');
-            (infoCard || document.querySelector('.analysis-section') || document.body).appendChild(wrap);
-            holdingsBody = document.getElementById('holdingsBody');
-          }
+    // holdings rendering: expects either payload.holdings (array of objects with symbol/qty/value/pct)
+    // or fallback to generating rows from chart_data keys
+    try {
+      const holdings = payload.holdings || (payload.holdings_table || []);
+      const tbody = document.getElementById('holdingsBody');
+      if (Array.isArray(holdings) && holdings.length) {
+        tbody.innerHTML = '';
+        holdings.forEach(h => {
+          const symbol = h.symbol || h.ticker || h.name || '';
+          const qty = (h.quantity !== undefined ? h.quantity : (h.qty !== undefined ? h.qty : ''));
+          const value = (h.current_value !== undefined ? h.current_value : (h.value !== undefined ? h.value : null));
+          const pct = (h.alloc !== undefined ? h.alloc : (h.pct !== undefined ? h.pct : null));
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="py-2">${symbol}</td>
+                          <td class="py-2">${qty}</td>
+                          <td class="py-2">₹${value != null ? formatCurrency(value) : '-'}</td>
+                          <td class="py-2">${pct != null ? Number(pct).toFixed(2) + '%' : '-'}</td>`;
+          tbody.appendChild(tr);
+        });
+        document.getElementById('holdingsEmpty').style.display = 'none';
+      } else if (labels.length) {
+        // build simple holdings table from chart_data entries
+        tbody.innerHTML = '';
+        let total = values.reduce((a,b) => a + Number(b || 0), 0) || 1;
+        labels.forEach((lab, idx) => {
+          const v = Number(values[idx] || 0);
+          const pct = total ? (v/total * 100) : 0;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="py-2">${lab}</td>
+                          <td class="py-2">-</td>
+                          <td class="py-2">₹${formatCurrency(v)}</td>
+                          <td class="py-2">${pct.toFixed(2)}%</td>`;
+          tbody.appendChild(tr);
+        });
+        document.getElementById('holdingsEmpty').style.display = 'none';
+      } else {
+        // no holdings info
+        tbody.innerHTML = '';
+        document.getElementById('holdingsEmpty').style.display = 'block';
+      }
+    } catch (e) {
+      console.error('holdings render error', e);
+      document.getElementById('holdingsEmpty').style.display = 'block';
+    }
 
-          if (holdings && holdings.length) {
-            holdingsBody.innerHTML = '';
-            holdings.forEach(h => {
-              const tr = document.createElement('tr');
-              tr.className = 'border-t';
-              const ticker = h.ticker || h.symbol || h.name || '';
-              const qty = h.qty != null ? h.qty : '';
-              const value = h.value != null ? Number(h.value).toLocaleString('en-IN') : '';
-              const pct = h.pct != null ? (Number(h.pct).toFixed(2) + '%') : '';
-              tr.innerHTML = `<td class="py-2">${ticker}</td><td class="py-2">${qty}</td><td class="py-2">₹${value}</td><td class="py-2">${pct}</td>`;
-              holdingsBody.appendChild(tr);
-            });
-          } else {
-            holdingsBody.innerHTML = '<tr><td colspan="4" class="text-sm text-gray-500 py-3">No holdings provided.</td></tr>';
-          }
-        } catch (e) { console.error('holdings render', e); }
-
-        try { sessionStorage.removeItem('sebi_portfolio_analysis'); } catch (e) { }
-      })();
-    </script>
+    // cleanup: remove stored payload so user doesn't see stale data next time (optional)
+    try { sessionStorage.removeItem('sebi_portfolio_analysis'); } catch(e){}
+  })();
+  </script>
 </body>
 </html>
