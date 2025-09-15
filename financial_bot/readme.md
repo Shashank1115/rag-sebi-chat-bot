@@ -94,9 +94,18 @@ docker-compose up --build
 
 Here are some example pages from **SEBI Saathi**:
 
+### 🔑 Login Page
+
+![Login Page](screenshots/login.png)
+
+### 📝 Register Page
+
+![Register Page](screenshots/register.png)
+
 ### 🏠 Dashboard
 
 ![Dashboard](screenshots/dashboard.png)
+
 
 ### 🤖 Chat Interface
 
@@ -104,7 +113,12 @@ Here are some example pages from **SEBI Saathi**:
 
 ### 📊 Portfolio Page
 
-![Portfolio Page](screenshots/portfolio.png)
+![Portfolio Page](screenshots/portfolio1.png)
+![Portfolio Page](screenshots/portfolio2.png)
+
+### 📊 IPO Analyzer 
+
+![Analyzer Page](screenshots/ipo.png)
 
 *(Place your actual screenshots in a `screenshots/` folder in the repo and update these paths.)*
 
