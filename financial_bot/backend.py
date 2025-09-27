@@ -1,16 +1,8 @@
 # backend.py
 """
-Robust backend for financial_bot.
-
-Features:
- - Exponential backoff + retries wrapper for transient embedding/search failures
- - LRU cache for local embeddings
- - Local SentenceTransformers fallback for embeddings when remote provider fails
- - similarity_search wrapper with fallback to local embeddings to avoid 500s
- - IPO analyzer endpoint (file or pasted content) with saved reports (list/get/compare)
- - Portfolio upload / dashboard endpoints, SEBI circulars scraping, live market data
- - Working news fetch (multiple providers + caching)
- - Portfolio 6-month history endpoint for line chart
+Full backend for SEBI Saathi (combined features + static SPA serving).
+- Serves frontend build from frontend/dist (if exists)
+- Contains DB models, auth, IPO analyzer, portfolio endpoints, news fetch, embeddings fallback, etc.
 """
 
 import os
@@ -27,7 +19,7 @@ import time
 import logging
 import re
 import pathlib
-
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from bs4 import BeautifulSoup
@@ -35,7 +27,7 @@ from dotenv import load_dotenv
 from urllib.parse import unquote, quote
 
 from flask import (
-    Flask, request, jsonify, render_template, send_from_directory, session ,Response, url_for, render_template_string
+    Flask, request, jsonify, render_template, send_from_directory, session, Response, url_for, send_file, redirect
 )
 from flask_cors import CORS
 
@@ -46,13 +38,24 @@ from flask_login import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# LangChain / providers
-from langchain_chroma import Chroma
-from langchain.prompts import PromptTemplate
-from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings   # local HF embeddings
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# LangChain / providers (placeholders; if not installed, initialization may fail but routes stay)
+try:
+    from langchain_chroma import Chroma
+    from langchain.prompts import PromptTemplate
+    from langchain_groq import ChatGroq
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    # Provide fallback names so file imports don't crash at import time; initialization will handle missing pieces.
+    Chroma = None
+    PromptTemplate = None
+    ChatGroq = None
+    HuggingFaceEmbeddings = None
+    PyPDFLoader = None
+    DirectoryLoader = None
+    RecursiveCharacterTextSplitter = None
+
 from functools import lru_cache
 # markdown converter (server-side use)
 from markdown import markdown
@@ -68,7 +71,7 @@ except Exception:
 NEWS_CACHE = {}
 NEWS_CACHE_TTL = 30 * 60  # 30 minutes
 
-# --- Stock news helpers (providers + utilities) ---
+# --- Helpers for news ---
 def _is_probable_ticker(text: str) -> bool:
     t = (text or "").strip()
     if not t: return False
@@ -116,7 +119,7 @@ def _fetch_news_finnhub(symbol: str, max_headlines: int):
             if combined: out.append(combined)
         return out
     except Exception as e:
-        app.logger.warning(f"Finnhub news error for {symbol}: {e}")
+        app_logger().warning(f"Finnhub news error for {symbol}: {e}")
         return []
 
 def _fetch_news_marketaux(symbol: str, max_headlines: int):
@@ -161,7 +164,7 @@ def _fetch_news_marketaux(symbol: str, max_headlines: int):
             if combined: out.append(combined)
         return out
     except Exception as e:
-        app.logger.warning(f"Marketaux news error for {symbol}: {e}")
+        app_logger().warning(f"Marketaux news error for {symbol}: {e}")
         return []
 
 def _fetch_news_alphavantage(symbol: str, max_headlines: int):
@@ -184,7 +187,7 @@ def _fetch_news_alphavantage(symbol: str, max_headlines: int):
             if combined: out.append(combined)
         return out
     except Exception as e:
-        app.logger.warning(f"AlphaVantage news error for {symbol}: {e}")
+        app_logger().warning(f"AlphaVantage news error for {symbol}: {e}")
         return []
 
 def _fetch_news_newsapi(query: str, max_headlines: int, api_key: str):
@@ -203,7 +206,7 @@ def _fetch_news_newsapi(query: str, max_headlines: int, api_key: str):
                 if combined: out.append(combined)
             return out
     except Exception as e:
-        app.logger.warning(f"NewsAPI error for {query}: {e}")
+        app_logger().warning(f"NewsAPI error for {query}: {e}")
     return []
 
 def _fetch_news_google(query: str, max_headlines: int):
@@ -227,7 +230,7 @@ def _fetch_news_google(query: str, max_headlines: int):
                 if len(items) >= max_headlines: break
         return items
     except Exception as e:
-        app.logger.warning(f"Google news scrape failed for {query}: {e}")
+        app_logger().warning(f"Google news scrape failed for {query}: {e}")
         return []
 
 def fetch_stock_headlines(symbol: str, max_headlines: int = 5) -> list:
@@ -267,10 +270,33 @@ load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("backend")
+def app_logger():
+    return logger
 
-# --- Flask app init ---
-app = Flask(__name__, static_folder="static", template_folder="templates")
+# --- Paths & Flask app init ---
+basedir = os.path.abspath(os.path.dirname(__file__))
+# FRONTEND_DIST is default frontend/dist relative to this backend file
+FRONTEND_DIST = os.path.join(basedir, "frontend", "dist")
+# If not present, check alternative places (e.g., backend/static/dist)
+if not os.path.isdir(FRONTEND_DIST):
+    alt = os.path.join(basedir, "static", "dist")
+    if os.path.isdir(alt):
+        FRONTEND_DIST = alt
+
+app = Flask(__name__, static_folder=None, template_folder=os.path.join(basedir, "templates"))
+# We set static_folder=None because we serve the SPA build via custom routes
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
+
+app_logger().info("FRONTEND_DIST resolved to: %s", FRONTEND_DIST)
+
+# Cookie/session settings helpful for cross-port dev (adjust for production!)
+app.config['SESSION_COOKIE_NAME'] = os.getenv('SESSION_COOKIE_NAME', 'sebisession')
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+# For local dev where frontend is on different port, allow cross-site cookies.
+# In production you may want 'Lax' or 'Strict' and set SESSION_COOKIE_SECURE = True
+same_site = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')  # changed default to 'Lax' for local dev
+app.config['SESSION_COOKIE_SAMESITE'] = same_site
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'False').lower() in ('true', '1', 'yes')
 
 # Enable credentialed CORS so browser sends cookies from your frontend origins
 CORS(app,
@@ -279,7 +305,9 @@ CORS(app,
          "http://localhost:3000",
          "http://127.0.0.1:3000",
          "http://localhost:5173",
-         "http://127.0.0.1:5173"
+         "http://127.0.0.1:5173",
+         "http://localhost:5174",
+         "http://127.0.0.1:5174"
      ]}})
 
 # --- Database config ---
@@ -293,8 +321,20 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login_page"
 
+# IMPORTANT: For API/XHR requests return JSON 401 (instead of redirecting to login HTML).
+@login_manager.unauthorized_handler
+def unauthorized_callback():
+    wants_json = (
+        request.accept_mimetypes.accept_json
+        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or request.is_json
+        or request.headers.get("Accept") == "application/json"
+    )
+    if wants_json:
+        return jsonify({"error": "authentication_required"}), 401
+    return redirect(url_for("login_page"))
+
 # --- Global variables & directories ---
-basedir = os.path.abspath(os.path.dirname(__file__))
 VECTOR_STORE_PATH_MAIN = os.path.join(basedir, "vector_store")
 USER_DATA_PATH = os.path.join(basedir, "user_data")
 DATA_PATH = os.path.join(basedir, "data")
@@ -346,7 +386,6 @@ class Holding(db.Model):
     portfolio_id = db.Column(db.Integer, db.ForeignKey("portfolios.id"), nullable=False)
     portfolio = db.relationship("Portfolio", back_populates="holdings")
 
-# IPO Reports
 class IPOReport(db.Model):
     __tablename__ = "ipo_reports"
     id = db.Column(db.Integer, primary_key=True)
@@ -424,14 +463,15 @@ def similarity_search_with_fallback(query: str, k: int = 4, user_vector_store_pa
     target_db = None
     try:
         if user_vector_store_path:
-            if os.path.exists(user_vector_store_path):
+            if os.path.exists(user_vector_store_path) and Chroma is not None:
                 target_db = Chroma(persist_directory=user_vector_store_path, embedding_function=embeddings)
                 logger.debug("Using user vectorstore at %s", user_vector_store_path)
             else:
-                logger.debug("User vectorstore path not found: %s", user_vector_store_path)
+                logger.debug("User vectorstore path not found or Chroma unavailable: %s", user_vector_store_path)
                 target_db = None
         if target_db is None:
-            if db_main is None: raise RuntimeError("Main vectorstore not initialized.")
+            if db_main is None:
+                raise RuntimeError("Main vectorstore not initialized.")
             target_db = db_main
         try:
             logger.debug("Primary similarity_search via vectorstore (query='%s' k=%d)", query[:120], k)
@@ -459,11 +499,25 @@ def initialize_app():
         GROQ_API_KEY = os.getenv("GROQ_API_KEY")
         if not GROQ_API_KEY:
             logger.warning("GROQ_API_KEY not set. LLM may fail.")
-        llm = ChatGroq(temperature=0, model_name="llama-3.1-8b-instant", api_key=GROQ_API_KEY)
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        # instantiate LLM only if ChatGroq is available
+        if ChatGroq is not None:
+            llm = ChatGroq(temperature=0, model_name="llama-3.1-8b-instant", api_key=GROQ_API_KEY)
+        else:
+            llm = None
+        if HuggingFaceEmbeddings is not None:
+            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        else:
+            embeddings = None
+
         os.makedirs(VECTOR_STORE_PATH_MAIN, exist_ok=True)
-        db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
-        logger.info("Models and MAIN vector store loaded successfully (or opened).")
+        if Chroma is not None and embeddings is not None:
+            try:
+                db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
+            except Exception:
+                logger.exception("Failed to open/create main Chroma vectorstore")
+                db_main = None
+        else:
+            db_main = None
 
         scam_data = safe_load_json(os.path.join(DATA_PATH, 'scam_examples.json'))
         myth_data = safe_load_json(os.path.join(DATA_PATH, 'myths.json'))
@@ -474,14 +528,14 @@ def initialize_app():
             "QUESTION: {question}\n"
             "INSTRUCTIONS: Based ONLY on the context, answer the user's question. If the answer is not in the context, say so."
         )
-        qa_prompt = PromptTemplate(template=qa_prompt_template, input_variables=["context", "question"])
+        qa_prompt = PromptTemplate(template=qa_prompt_template, input_variables=["context", "question"]) if PromptTemplate is not None else None
 
         analysis_prompt_template = (
             "You are 'SEBI Saathi', an expert portfolio analyst. Analyze the user's portfolio based on the data provided. "
             "Provide a 'Portfolio Health Check' as Markdown. Do NOT give investment advice.\n"
             "USER'S PORTFOLIO DATA:\n{portfolio_data}\nANALYSIS:"
         )
-        analysis_prompt = PromptTemplate(template=analysis_prompt_template, input_variables=["portfolio_data"])
+        analysis_prompt = PromptTemplate(template=analysis_prompt_template, input_variables=["portfolio_data"]) if PromptTemplate is not None else None
 
         os.makedirs(USER_DATA_PATH, exist_ok=True)
         return True
@@ -490,19 +544,92 @@ def initialize_app():
         return False
 
 # -----------------------
-# --- ROUTES (API) -----
+# --- Static SPA serving helpers ---
 # -----------------------
+def dist_file_path(*parts):
+    return os.path.join(FRONTEND_DIST, *parts)
 
+# Serve asset directories if frontend build exists
+if os.path.isdir(FRONTEND_DIST):
+    app_logger().info("Serving SPA from: %s", FRONTEND_DIST)
+
+    @app.route('/assets/<path:filename>')
+    def _serve_assets(filename):
+        assets_dir = os.path.join(FRONTEND_DIST, "assets")
+        candidate = os.path.join(assets_dir, filename)
+        if os.path.isfile(candidate):
+            return send_from_directory(assets_dir, filename)
+        return jsonify({'error': 'Not found'}), 404
+
+    @app.route('/dist/<path:filename>')
+    def _serve_dist(filename):
+        candidate = dist_file_path(filename)
+        if os.path.isfile(candidate):
+            return send_from_directory(FRONTEND_DIST, filename)
+        return jsonify({'error': 'Not found'}), 404
+
+    # Serve root-level static files referenced by index.html (like favicon)
+    @app.route('/static_dist/<path:filename>')
+    def _serve_static_dist(filename):
+        candidate = dist_file_path(filename)
+        if os.path.isfile(candidate):
+            return send_from_directory(FRONTEND_DIST, filename)
+        return jsonify({'error': 'Not found'}), 404
+
+# If dist not present, logging will show fallback to templates
+else:
+    app_logger().warning("Frontend dist not found at %s — SPA won't be served from dist. Falling back to templates if available.", FRONTEND_DIST)
+
+# Serve SPA index for root and for client-side routes. If dist available, use it.
+# Serve the SPA index for client-side routes (do NOT require login here)
+@app.route('/dashboard')
+def dashboard_page():
+    idx = dist_file_path('index.html')
+    if os.path.exists(idx):
+        # Serve the SPA entry point. React Router will decide what to render on the client.
+        return send_file(idx)
+    # Fallback dev-mode template (only used if you kept a server-side template)
+    try:
+        return render_template('dashboard.html')
+    except Exception:
+        return "<h3>Dashboard template not found and frontend not built.</h3>", 500
+
+# Also ensure /, /login, /register behave the same (serve index.html)
 @app.route('/')
 def index():
+    idx = dist_file_path('index.html')
+    if os.path.exists(idx):
+        return send_file(idx)
     if 'anon_id' not in session:
         session['anon_id'] = os.urandom(8).hex()
-    return render_template('index.html')
+    try:
+        return render_template('index.html')
+    except Exception:
+        return "<h3>Frontend not built. Run `npm run build` in frontend/ and restart backend.</h3>", 500
 
-@app.route('/dashboard')
-@login_required
-def dashboard_page():
-    return render_template('dashboard.html')
+@app.route('/login')
+def login_page():
+    idx = dist_file_path('index.html')
+    if os.path.exists(idx):
+        return send_file(idx)
+    try:
+        return render_template('login.html')
+    except Exception:
+        return "<h3>Login page not found and frontend not built.</h3>", 500
+
+@app.route('/register')
+def register_page():
+    idx = dist_file_path('index.html')
+    if os.path.exists(idx):
+        return send_file(idx)
+    try:
+        return render_template('register.html')
+    except Exception:
+        return "<h3>Register page not found and frontend not built.</h3>", 500
+
+# -----------------------
+# --- API Routes (restored from your original code)
+# -----------------------
 
 @app.route('/sebi/circulars')
 def sebi_circulars():
@@ -570,7 +697,10 @@ def ask():
             docs = similarity_search_with_fallback(question, k=4, user_vector_store_path=None)
         context = "\n\n".join([getattr(doc, 'page_content', str(doc)) for doc in (docs or [])])
         if not context.strip(): context = "No relevant information was found in the selected knowledge base."
-        formatted_prompt = qa_prompt.format(context=context, question=question)
+        formatted_prompt = qa_prompt.format(context=context, question=question) if qa_prompt is not None else f"CONTEXT:{context}\nQUESTION:{question}"
+        if llm is None:
+            # fallback simple response
+            return jsonify({'answer': "LLM not configured on server. Please check GROQ_API_KEY."})
         result = llm.invoke(formatted_prompt)
         answer = getattr(result, 'content', result) if result is not None else "No response from LLM."
         return jsonify({'answer': answer})
@@ -582,27 +712,120 @@ def ask():
 @login_required
 def upload_and_ingest():
     file = request.files.get('userFile')
-    user_id = current_user.id
-    if not all([file, user_id]): return jsonify({'error': 'Missing file or user session'}), 400
+    try:
+        user_id = current_user.id
+    except Exception:
+        user_id = session.get('user_id')
+
+    if not all([file, user_id]):
+        return jsonify({'error': 'Missing file or user session'}), 400
+
     user_id_str = str(user_id)
     user_docs_path = os.path.join(USER_DATA_PATH, user_id_str, "docs")
-    user_vector_store_path = os.path.join(USER_DATA_PATH, user_id_str, "vector_store")
+    user_vector_base = os.path.join(USER_DATA_PATH, user_id_str, "vector_store")
     os.makedirs(user_docs_path, exist_ok=True)
-    filename = secure_filename(file.filename) or "uploaded.pdf"
+
+    # Save uploaded file
+    filename = secure_filename(file.filename) or f"uploaded_{int(time.time())}.pdf"
     file_path = os.path.join(user_docs_path, filename)
-    file.save(file_path)
     try:
-        if os.path.exists(user_vector_store_path): shutil.rmtree(user_vector_store_path)
+        file.save(file_path)
+    except Exception as e:
+        logger.exception("Failed to save uploaded file")
+        return jsonify({'error': f'Failed to save file: {e}'}), 500
+
+    # Load and split PDFs
+    try:
+        if DirectoryLoader is None or PyPDFLoader is None:
+            raise RuntimeError("PDF loader not available on server.")
         loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
         documents = loader.load()
-        if not documents: return jsonify({'error': 'No PDFs found in uploaded docs.'}), 400
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        texts = text_splitter.split_documents(documents)
-        Chroma.from_documents(texts, embeddings, persist_directory=user_vector_store_path)
-        return jsonify({'success': True, 'user_library': sorted(os.listdir(user_docs_path))})
     except Exception:
-        logger.exception("--- AN ERROR OCCURRED DURING USER INGESTION ---")
-        return jsonify({'error': 'Failed to process the document.'}), 500
+        logger.exception("Failed to load PDFs from user docs")
+        return jsonify({'error': 'Failed to read uploaded PDF(s).'}), 500
+
+    if not documents:
+        return jsonify({'error': 'No PDFs found in uploaded docs.'}), 400
+
+    # Split into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150) if RecursiveCharacterTextSplitter is not None else None
+    try:
+        if text_splitter is not None:
+            chunks = text_splitter.split_documents(documents)
+        else:
+            # naive fallback
+            chunks = documents
+    except Exception:
+        logger.exception("Text splitter failed - trying simpler split")
+        # fallback: build minimal chunks from page_content
+        chunks = []
+        for d in documents:
+            text = getattr(d, "page_content", "") or ""
+            if text.strip():
+                class SimpleDoc:
+                    def __init__(self, page_content): self.page_content = page_content
+                chunks.append(SimpleDoc(text))
+
+    # Filter out empty chunks
+    chunks = [c for c in chunks if getattr(c, "page_content", "").strip()]
+    if not chunks:
+        return jsonify({'error': 'No text extracted from the uploaded PDFs.'}), 400
+
+    # Prepare new vector store directory (versioned)
+    new_vector_store = f"{user_vector_base}_v{int(time.time())}"
+    os.makedirs(new_vector_store, exist_ok=True)
+
+    # Helper: local fallback embedding wrapper
+    class LocalEmbedWrapper:
+        def embed_documents(self, texts):
+            return [local_embed_list(t) for t in texts]
+        def embed_query(self, text):
+            return local_embed_list(text)
+
+    # Try to build vectorstore using main `embeddings`, fall back to local embedder.
+    try:
+        if Chroma is None:
+            raise RuntimeError("Chroma library not available on server.")
+        if embeddings is None or not hasattr(embeddings, "embed_documents"):
+            raise RuntimeError("Configured embeddings not available")
+
+        sample_texts = [chunks[0].page_content[:500]]
+        sample_vecs = embeddings.embed_documents(sample_texts)
+        if not sample_vecs or not isinstance(sample_vecs[0], (list, tuple)):
+            raise RuntimeError("Embeddings returned empty or invalid vectors on sample")
+
+        Chroma.from_documents(chunks, embedding_function=embeddings, persist_directory=new_vector_store)
+        used_vector_store = new_vector_store
+    except Exception as primary_exc:
+        logger.warning("Primary embeddings failed: %s. Falling back to local embedder.", repr(primary_exc))
+        try:
+            if SentenceTransformer is None:
+                raise RuntimeError("Local SentenceTransformer not available (install sentence-transformers)")
+
+            local_wrapper = LocalEmbedWrapper()
+            Chroma.from_documents(chunks, embedding_function=local_wrapper, persist_directory=new_vector_store)
+            used_vector_store = new_vector_store
+            logger.info("Built user vector store using local SentenceTransformer fallback: %s", new_vector_store)
+        except Exception as fallback_exc:
+            logger.exception("Both primary and local fallback embedding attempts failed")
+            try:
+                if os.path.exists(new_vector_store):
+                    shutil.rmtree(new_vector_store)
+            except Exception:
+                logger.exception("Failed to cleanup incomplete vector store")
+            return jsonify({'error': 'Failed to create embeddings for the uploaded document(s).'}), 500
+
+    # Success
+    try:
+        user_lib = sorted(os.listdir(user_docs_path))
+    except Exception:
+        user_lib = []
+
+    return jsonify({
+        'success': True,
+        'user_library': user_lib,
+        'vector_store': os.path.basename(used_vector_store)
+    })
 
 @app.route('/delete_user_file', methods=['POST'])
 def delete_user_file():
@@ -620,6 +843,9 @@ def delete_user_file():
             if os.path.exists(user_vector_store_path): shutil.rmtree(user_vector_store_path)
             remaining_files = os.listdir(user_docs_path)
             if remaining_files:
+                if DirectoryLoader is None or PyPDFLoader is None or RecursiveCharacterTextSplitter is None or embeddings is None or Chroma is None:
+                    # if key pieces missing, skip rebuild
+                    return jsonify({'success': True, 'user_library': remaining_files})
                 loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
                 documents = loader.load()
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
@@ -668,7 +894,9 @@ def analyze():
         df['Investment Value'] = df['Quantity'] * df['Current Price']
         sector_allocation = df.groupby('Sector')['Investment Value'].sum().round(2).to_dict()
         portfolio_string = df.to_string()
-        formatted_prompt = analysis_prompt.format(portfolio_data=portfolio_string)
+        formatted_prompt = analysis_prompt.format(portfolio_data=portfolio_string) if analysis_prompt is not None else portfolio_string
+        if llm is None:
+            return jsonify({'analysis_markdown': "LLM not configured", 'chart_data': sector_allocation})
         result = llm.invoke(formatted_prompt)
         analysis_markdown = getattr(result, 'content', result)
         return jsonify({'analysis_markdown': analysis_markdown, 'chart_data': sector_allocation})
@@ -678,39 +906,91 @@ def analyze():
     finally:
         if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
 
-# ---------- Portfolio endpoints ----------
+# ---------- Portfolio helpers & endpoints ----------
 POSITIVE_WORDS = {"beats","upgrade","raised","approved","good","strong","positive","gain","growth","outperform","record","profit","surge"}
 NEGATIVE_WORDS = {"downgrade","cut","loss","falls","fall","decline","weak","negative","recall","scandal","fraud","drops","hit","miss"}
 
 _price_cache = {}
 CACHE_TTL = 300  # 5 minutes
 
+def _normalize_ticker_for_yf(sym: str) -> str:
+    s = (sym or "").strip()
+    if not s: return s
+    # If user already provided an exchange suffix keep it
+    if '.' in s:
+        return s
+    # Heuristic: treat plain tickers as NSE tickers (common in your CSVs)
+    return f"{s}.NS"
+
 def fetch_latest_prices(symbols):
-    out = {}; now = time.time(); need_fetch = []
+    """
+    Return dict {symbol: price_or_None}. Accepts list of symbols as stored in DB (like 'RELIANCE' or 'RELIANCE.NS').
+    Uses batch yf.download when possible, tries per-symbol fallback when batch fails.
+    """
+    out = {}
+    now = time.time()
+    need_fetch = []
+
+    # TTL cache check
     for sym in symbols:
         if sym in _price_cache and (now - _price_cache[sym]["time"]) < CACHE_TTL:
             out[sym] = _price_cache[sym]["price"]
         else:
             need_fetch.append(sym)
-    if need_fetch:
-        try:
-            data = yf.download(need_fetch, period="1d", group_by="ticker", progress=False)
-            for sym in need_fetch:
+
+    if not need_fetch:
+        return out
+
+    # Normalize tickers for yfinance
+    ticker_map = {sym: _normalize_ticker_for_yf(sym) for sym in need_fetch}
+    yf_tickers = list(set(ticker_map.values()))
+
+    # Try batch download first
+    try:
+        df = yf.download(" ".join(yf_tickers), period="1d", group_by="ticker", progress=False, threads=True, auto_adjust=False)
+        # If batch returned a multiindex, iterate
+        if isinstance(df.columns, pd.MultiIndex):
+            for orig_sym, yf_sym in ticker_map.items():
+                price = None
                 try:
-                    if sym in data and not data[sym].empty:
-                        last = data[sym]["Close"].iloc[-1]; price = float(last)
-                    elif "Close" in data and not data.empty:
-                        last = data["Close"].iloc[-1]; price = float(last)
-                    else:
-                        price = None
+                    if yf_sym in df:
+                        sub = df[yf_sym]
+                        if 'Close' in sub.columns and not sub.empty:
+                            v = sub['Close'].iloc[-1]
+                            price = float(v) if not (pd.isna(v)) else None
                 except Exception:
                     price = None
-                _price_cache[sym] = {"price": price, "time": now}
-                out[sym] = price
-        except Exception as e:
-            app.logger.debug(f"fetch_latest_prices: batch failed: {e}")
-            for sym in need_fetch:
-                out[sym] = None; _price_cache[sym] = {"price": None, "time": now}
+                _price_cache[orig_sym] = {"price": price, "time": now}
+                out[orig_sym] = price
+        else:
+            # single-dataframe returned (when only one ticker)
+            for orig_sym, yf_sym in ticker_map.items():
+                price = None
+                try:
+                    if 'Close' in df.columns and not df.empty:
+                        v = df['Close'].iloc[-1]
+                        price = float(v) if not (pd.isna(v)) else None
+                except Exception:
+                    price = None
+                _price_cache[orig_sym] = {"price": price, "time": now}
+                out[orig_sym] = price
+    except Exception as e:
+        app_logger().debug("fetch_latest_prices: batch download failed: %s", e)
+        # fallback: per-symbol
+        for orig_sym, yf_sym in ticker_map.items():
+            price = None
+            try:
+                t = yf.Ticker(yf_sym)
+                hist = t.history(period="1d", interval="1d")
+                if hist is not None and not hist.empty and 'Close' in hist.columns:
+                    v = hist['Close'].iloc[-1]
+                    price = float(v) if not (pd.isna(v)) else None
+            except Exception as e2:
+                app_logger().debug("fetch_latest_prices: per-symbol fetch failed for %s (%s): %s", orig_sym, yf_sym, e2)
+                price = None
+            _price_cache[orig_sym] = {"price": price, "time": now}
+            out[orig_sym] = price
+
     return out
 
 def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
@@ -732,7 +1012,7 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
                     if combined: headlines.append(combined)
                 return headlines
         except Exception as e:
-            app.logger.warning(f"NewsAPI error for {symbol}: {e}")
+            app_logger().warning(f"NewsAPI error for {symbol}: {e}")
     try:
         query = urllib.parse.quote_plus(f"{symbol} stock")
         search_url = f"https://www.google.com/search?q={query}&tbm=nws"
@@ -747,23 +1027,13 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
             if title: items.append(title)
         return items
     except Exception as e:
-        app.logger.warning(f"Google news scrape failed for {symbol}: {e}")
+        app_logger().warning(f"Google news scrape failed for {symbol}: {e}")
         return []
 
-# Public news endpoint (no auth) so dashboard widgets always load
-@app.route('/news/<symbol>', methods=['GET'])
-def news_for_symbol(symbol):
-    symbol = (symbol or "").strip().upper()
-    if not symbol: return jsonify({'error': 'symbol required'}), 400
-    try:
-        max_headlines = int(request.args.get('max', 5))
-    except Exception:
-        max_headlines = 5
+def news_for_symbol_cached(symbol, max_headlines=5):
     cache_key = f"news:{symbol}:{max_headlines}"
     def _fetch(): return fetch_stock_headlines(symbol, max_headlines=max_headlines)
-    headlines = cached_headlines(cache_key, _fetch, ttl=NEWS_CACHE_TTL)
-    source = 'cache_or_mixed'
-    return jsonify({'source': source, 'symbol': symbol, 'headlines': headlines})
+    return cached_headlines(cache_key, _fetch, ttl=NEWS_CACHE_TTL)
 
 def simple_sentiment_estimate(headlines):
     score = 0
@@ -788,35 +1058,51 @@ def discover_company_name(sym):
         return None
 
 def build_dashboard_payload(user_id):
+    """
+    Build dashboard payload with numeric fields cleaned (NaN -> None).
+    """
     user = db.session.get(User, int(user_id))
     if not user: return {'error': 'user not found'}
     portfolio = Portfolio.query.filter_by(user_id=user.id).first()
     if not portfolio: return {'holdings': [], 'allocations': {}, 'alerts': []}
-    holdings = portfolio.holdings
+    holdings = portfolio.holdings or []
     symbols = [h.symbol for h in holdings]
     prices = fetch_latest_prices(symbols)
     holdings_payload = []; total_value = 0.0
     for h in holdings:
         last_price = prices.get(h.symbol)
-        current_value = (last_price or 0.0) * h.quantity
-        total_value += current_value
+        current_value = None
+        try:
+            if last_price is None or (isinstance(last_price, float) and (np.isnan(last_price) or np.isinf(last_price))):
+                current_value = None
+            else:
+                current_value = round(float(last_price) * float(h.quantity), 2)
+                total_value += current_value
+        except Exception:
+            current_value = None
+
         holdings_payload.append({
             'symbol': h.symbol,
-            'quantity': h.quantity,
-            'avg_price': h.avg_price,
-            'last_price': last_price,
-            'current_value': round(current_value, 2)
+            'quantity': float(h.quantity),
+            'avg_price': (float(h.avg_price) if h.avg_price is not None else None),
+            'last_price': (float(last_price) if last_price is not None else None),
+            'current_value': (current_value if current_value is not None else None)
         })
+
     allocations = {}
-    if total_value > 0:
+    if total_value and total_value > 0:
         for item in holdings_payload:
-            allocations[item['symbol']] = round((item['current_value'] / total_value) * 100, 2)
+            cv = item.get('current_value') or 0.0
+            try:
+                allocations[item['symbol']] = round((cv / total_value) * 100.0, 2)
+            except Exception:
+                allocations[item['symbol']] = 0.0
     else:
         for item in holdings_payload:
             allocations[item['symbol']] = 0.0
 
     alerts = []
-    sorted_holdings = sorted(holdings_payload, key=lambda x: x['current_value'], reverse=True)[:5]
+    sorted_holdings = sorted(holdings_payload, key=lambda x: x.get('current_value') or 0.0, reverse=True)[:5]
     def _get_headlines_cached(query, max_headlines=5, ttl=NEWS_CACHE_TTL):
         key = f"dash_news:{query}:{max_headlines}"
         return cached_headlines(key, lambda: fetch_stock_headlines(query, max_headlines=max_headlines), ttl=ttl)
@@ -836,18 +1122,17 @@ def build_dashboard_payload(user_id):
             'quantity': h['quantity'],
             'sentiment': sentiment_label,
             'estimated_pct_move': est_pct,
-            'headlines': headlines[:5]
+            'headlines': headlines[:5] if headlines else []
         })
     return {
         'user_id': user.id,
         'username': user.username,
-        'total_value': round(total_value, 2),
+        'total_value': (round(total_value, 2) if total_value and not math.isnan(total_value) else None),
         'holdings': holdings_payload,
         'allocations': allocations,
         'alerts': alerts
     }
 
-# --- Portfolio upload / main dashboard payload ---
 @app.route('/portfolio/upload', methods=['POST'])
 @login_required
 def upload_portfolio():
@@ -876,50 +1161,139 @@ def get_portfolio():
     payload = build_dashboard_payload(current_user.id)
     return jsonify(payload)
 
-# --- NEW: Portfolio history for line chart ---
 @app.route('/portfolio/history', methods=['GET'])
 @login_required
 def portfolio_history():
     try:
         months = int(request.args.get('months', 6))
+
         portfolio = Portfolio.query.filter_by(user_id=current_user.id).first()
-        if not portfolio or not portfolio.holdings:
+        if not portfolio or not getattr(portfolio, "holdings", None):
             return jsonify({'history': []})
+
         symbols = [h.symbol for h in portfolio.holdings]
+        if not symbols:
+            return jsonify({'history': []})
+
         end_date = datetime.today()
         start_date = end_date - pd.DateOffset(months=months)
+
+        # store per-symbol close series
         hist_data = {}
+
         for sym in symbols:
             try:
-                df = yf.download(sym, start=start_date, end=end_date, progress=False, interval="1wk")
-                if not df.empty:
-                    hist_data[sym] = df['Close']
-            except Exception:
+                yf_sym = _normalize_ticker_for_yf(sym)
+                df = yf.download(yf_sym,
+                                 start=start_date,
+                                 end=end_date,
+                                 progress=False,
+                                 interval="1wk",
+                                 auto_adjust=True,
+                                 threads=False)
+                if df is None or df.empty:
+                    logger.debug("No price data for %s (yf symbol=%s)", sym, yf_sym)
+                    continue
+
+                close = None
+                if 'Close' in df.columns:
+                    close = df['Close']
+                elif 'Adj Close' in df.columns:
+                    close = df['Adj Close']
+                else:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        try:
+                            close = df.xs('Close', axis=1, level=1, drop_level=False)
+                            if isinstance(close, pd.DataFrame):
+                                close = close.iloc[:, 0]
+                        except Exception:
+                            close = None
+
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+
+                if close is None or close.empty:
+                    logger.debug("No close series for %s", sym)
+                    continue
+
+                close.index = pd.to_datetime(close.index, errors='coerce')
+                close = close.dropna()
+                if close.empty:
+                    logger.debug("Close series empty after dropna for %s", sym)
+                    continue
+
+                # coerce to numeric and scalarize arrays if needed
+                if close.dtype == object:
+                    def scalarize(x):
+                        try:
+                            if isinstance(x, (list, tuple, np.ndarray)):
+                                x0 = np.asarray(x).ravel()
+                                return float(x0[0]) if x0.size > 0 else np.nan
+                            return float(x)
+                        except Exception:
+                            return np.nan
+                    close = close.apply(scalarize)
+                else:
+                    close = pd.to_numeric(close, errors='coerce')
+
+                close = close.dropna()
+                if close.empty:
+                    logger.debug("After coercion no numeric close values for %s", sym)
+                    continue
+
+                hist_data[sym] = close
+
+            except Exception as e:
+                logger.warning("Failed to fetch history for %s: %s", sym, getattr(e, 'message', str(e)))
                 continue
+
+        # Build portfolio time series by weighting each symbol series by its holding quantity
         portfolio_series = None
         for h in portfolio.holdings:
-            if h.symbol in hist_data:
-                series_val = hist_data[h.symbol] * h.quantity
-                portfolio_series = series_val if portfolio_series is None else portfolio_series.add(series_val, fill_value=0)
-                if portfolio_series is None or portfolio_series.empty:
-                 return jsonify({'history': []})
+            sym = h.symbol
+            qty = getattr(h, 'quantity', 0) or 0
+            if sym not in hist_data:
+                continue
+            try:
+                series_val = hist_data[sym] * float(qty)
+            except Exception:
+                # if hist_data[sym] contains non-scalar weird types, attempt to coerce
+                try:
+                    series_val = hist_data[sym].apply(lambda v: float(np.asarray(v).ravel()[0]) if hasattr(v, '__iter__') else float(v)) * float(qty)
+                except Exception:
+                    continue
 
-            # make sure the index is datetime, even if alignment cast it to object/str
-            ps = portfolio_series.dropna().sort_index()
-            idx = pd.to_datetime(ps.index, errors='coerce')
+            if portfolio_series is None:
+                portfolio_series = series_val
+            else:
+                portfolio_series = portfolio_series.add(series_val, fill_value=0)
 
-            # drop any rows that failed to parse to datetime (idx is a DatetimeIndex)
-            mask = ~idx.isna()
-            idx = idx[mask]
-            vals = ps.values[mask]
+        if portfolio_series is None or portfolio_series.empty:
+            return jsonify({'history': []})
 
-            history = [
-                {'date': ts.strftime('%Y-%m-%d'), 'value': round(float(val), 2)}
-                for ts, val in zip(idx, vals)
-            ]
-            return jsonify({'history': history})
+        ps = portfolio_series.dropna().sort_index()
+        ps.index = pd.to_datetime(ps.index, errors='coerce')
+        ps = ps[~ps.index.isna()]
+        if ps.empty:
+            return jsonify({'history': []})
 
-        
+        history = []
+        for ts, val in ps.items():
+            try:
+                if isinstance(val, (list, tuple, np.ndarray)):
+                    arr = np.asarray(val).ravel()
+                    if arr.size > 0:
+                        fval = float(arr[0])
+                    else:
+                        continue
+                else:
+                    fval = float(val)
+                history.append({'date': pd.to_datetime(ts).strftime('%Y-%m-%d'), 'value': round(fval, 2)})
+            except Exception:
+                continue
+
+        return jsonify({'history': history})
+
     except Exception as e:
         logger.exception("Failed to compute portfolio history")
         return jsonify({'error': str(e)}), 500
@@ -936,6 +1310,8 @@ IPO_CHECKLIST = [
 
 def extract_text_from_pdf(path, max_chars=100000):
     try:
+        if PyPDFLoader is None:
+            raise RuntimeError("PyPDFLoader not available")
         loader = PyPDFLoader(path); docs = loader.load()
         text = "\n\n".join([d.page_content for d in docs])
         return text[:max_chars]
@@ -1018,7 +1394,6 @@ def ipo_analyze():
         if not text or not text.strip():
             return jsonify({'error': 'No IPO content provided.'}), 400
 
-        # Heuristic SEBI-style checks for a simple score out of 100
         meta = simple_rule_extract(text)
         lower = text.lower()
         SEBI_KEYWORDS = {
@@ -1040,10 +1415,10 @@ def ipo_analyze():
             if found: total_score += WEIGHTS.get(key, 0)
         sebi_score = round(total_score, 2)
 
-        # Try LLM report
         report_md = ""
         try:
-            if llm is None: raise Exception("LLM not initialized")
+            if llm is None:
+                raise Exception("LLM not initialized")
             excerpt = text[:8000]
             prompt = [
                 "You are 'SEBI Saathi', an IPO analyst. Analyze the following IPO prospectus/excerpt and produce a structured report.",
@@ -1085,12 +1460,10 @@ def ipo_analyze():
             parts.append(f"**SEBI-style compliance score (heuristic):** {sebi_score}/100")
             report_md = "\n".join(parts)
 
-        # Save to DB and return report_id
         user_id = current_user.id if current_user else session.get('user_id')
         first_line = (text.splitlines() or [''])[0]
         title_guess = first_line.strip()[:200] if first_line and len(first_line.strip()) > 5 else None
         title = title_guess or uploaded_filename or "IPO analysis"
-        # Parse a simple "overall score" out of 30 if present in LLM text (best effort)
         overall_score = None
         m = re.search(r'[Ss]core\s*:\s*([0-9]{1,3})\s*/\s*30', report_md or "")
         if m:
@@ -1211,7 +1584,7 @@ def calculate_sip():
     except Exception as e:
         return jsonify({'error': f'Invalid input. {e}'}), 400
 
-# ---------- RAG sources (optional viewer) ----------
+# ---------- RAG sources ----------
 ALLOWED_SOURCE_EXTS = {'.pdf', '.txt', '.csv'}
 
 @app.route('/sources', methods=['GET'])
@@ -1317,32 +1690,38 @@ def source_viewer(filename):
         return jsonify({'error': 'Internal server error'}), 500
 
 # ---------- Auth pages ----------
-@app.route('/register')
-def register_page(): return render_template('register.html')
-
-@app.route('/login')
-def login_page(): return render_template('login.html')
+# Note: /login and /register now serve SPA index.html when frontend/dist exists (enables client-side routing)
 
 # ---------- Auth APIs ----------
-@app.route('/auth/register', methods=['POST'])
+@app.route("/auth/register", methods=["POST"])
 def auth_register():
-    data = request.get_json(force=True, silent=True) or {}
-    username = (data.get('username') or "").strip()
-    password = data.get('password') or ""
-    email = (data.get('email') or "").strip()
-    if not username or not password: return jsonify({'error': 'username and password required'}), 400
-    if User.query.filter_by(username=username).first():
-        return jsonify({'error': 'username already exists'}), 400
     try:
-        user = User(username=username, email=email); user.set_password(password)
-        db.session.add(user); db.session.commit()
-        portfolio = Portfolio(name="Default Portfolio", user_id=user.id)
-        db.session.add(portfolio); db.session.commit()
-        login_user(user); session['user_id'] = user.id
-        return jsonify({'success': True, 'user_id': user.id, 'username': user.username})
-    except Exception:
-        logger.exception("Registration failed"); db.session.rollback()
-        return jsonify({'error': 'Registration failed'}), 500
+        data = request.json
+        username = data.get("username", "").strip()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+
+        if not username or not email or not password:
+            return jsonify({"error": "All fields are required"}), 400
+
+        # check if already exists
+        if User.query.filter_by(email=email).first():
+            return jsonify({"error": "Email already registered"}), 400
+        if User.query.filter_by(username=username).first():
+            return jsonify({"error": "Username already taken"}), 400
+
+        user = User(username=username, email=email)
+        user.set_password(password)
+
+        db.session.add(user)
+        db.session.commit()
+        login_user(user)
+
+        return jsonify({"success": True, "username": user.username, "user_id": user.id})
+    except Exception as e:
+        logger.exception("Registration failed")
+        return jsonify({"error": "Registration failed", "details": str(e)}), 500
+
 
 @app.route('/auth/login', methods=['POST'])
 def auth_login():
@@ -1368,6 +1747,19 @@ def auth_logout():
     except Exception:
         pass
     return jsonify({'success': True})
+
+# NEW: endpoint your frontend may call for session/user info
+@app.route('/auth/whoami', methods=['GET'])
+def auth_whoami():
+    if current_user and getattr(current_user, "is_authenticated", False):
+        return jsonify({'user_id': current_user.id, 'username': current_user.username})
+    # if session contains user_id but user not loaded, attempt to provide
+    uid = session.get('user_id')
+    if uid:
+        u = db.session.get(User, int(uid))
+        if u:
+            return jsonify({'user_id': u.id, 'username': u.username})
+    return jsonify({'error': 'not_authenticated'}), 401
 
 # ---------- Portfolio helpers ----------
 def upsert_portfolio_from_df(user_id, df, portfolio_name="Default Portfolio"):
@@ -1412,5 +1804,7 @@ if __name__ == '__main__':
         logger.warning("Initialization had errors. LLM/embeddings may not work until configured correctly.")
     else:
         logger.info("Initialization complete.")
-    logger.info("Starting Flask server on http://0.0.0.0:%s ...", os.getenv("PORT", "5001"))
-    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5001)), debug=True, use_reloader=False)
+    port = int(os.getenv("PORT", 5001))
+    logger.info("Starting Flask server on http://0.0.0.0:%s ...", port)
+    # debug True during development; set to False in production
+    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)

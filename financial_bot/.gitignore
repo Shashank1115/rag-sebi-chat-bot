@@ -1,15 +1,58 @@
-# Python venv
-.venv/
-venv/
-
-# Vector store & artifacts
-vector_store/
-user_data/
-*.sqlite3
-*.bin
-*.pickle
-
-# Python cache
+# ---- Python ----
 __pycache__/
 *.pyc
-.vercel
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+instance/
+.venv/
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# ---- Flask specific ----
+*.log
+*.pid
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- SQLite database ----
+backend.sqlite
+*.db-journal
+
+# ---- Node / React ----
+node_modules/
+dist/
+build/
+.cache/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Environment & Secrets ----
+.env
+.env.local
+.env.*.local
+*.secret
+secrets.json
+
+# ---- VSCode / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+
+# ---- Coverage / Testing ----
+coverage/
+reports/
+junit.xml

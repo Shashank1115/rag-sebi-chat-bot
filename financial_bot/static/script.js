@@ -105,7 +105,6 @@
     function ensureChartLoaded(timeoutMs = 8000) {
         return new Promise((resolve, reject) => {
             if (window.Chart) return resolve(window.Chart);
-            // if already injecting, attach to its load/error events
             const existing = document.querySelector('script[data-chartjs-loader="true"]');
             if (existing) {
                 existing.addEventListener('load', () => resolve(window.Chart));
@@ -119,7 +118,6 @@
             s.onload = () => resolve(window.Chart);
             s.onerror = () => reject(new Error('Failed to load Chart.js'));
             document.head.appendChild(s);
-            // timeout guard
             setTimeout(() => {
                 if (window.Chart) return resolve(window.Chart);
                 reject(new Error('Chart.js load timed out'));
@@ -132,8 +130,9 @@
     // ------------------------------
     async function loadSebicirculars() {
         try {
-            const res = await fetch('/sebi/circulars');
-            const json = await res.json();
+            const res = await fetch('/sebi/circulars', { credentials: 'same-origin' });
+            const json = await tryParseJsonResponse(res, 'SEBI circulars');
+            if (!json) return;
             const container = document.querySelector('.news-section');
             if (!container) return;
             container.innerHTML = '';
@@ -161,8 +160,8 @@
     // ------------------------------
     async function updateLiveMarket() {
         try {
-            const resp = await fetch('/market/live');
-            const data = await resp.json();
+            const resp = await fetch('/market/live', { credentials: 'same-origin' });
+            const data = await tryParseJsonResponse(resp, 'market/live');
             if (!data) return;
             const updateElem = (id, info) => {
                 const el = document.getElementById(id);
@@ -187,6 +186,31 @@
     setInterval(updateLiveMarket, 3 * 60 * 1000); // every 3 minutes
 
     // ------------------------------
+    // Helper: parse JSON safely, detect HTML/login pages
+    // ------------------------------
+    async function tryParseJsonResponse(response, context = 'request') {
+        if (!response) return null;
+        const text = await response.text();
+        if (!text) return {};
+        const trimmed = text.trim();
+        if (response.status === 401) {
+            console.warn(`${context} returned 401`);
+            return null;
+        }
+        // detect HTML (login page or error page)
+        if (trimmed.startsWith('<') || /<!doctype html/i.test(trimmed)) {
+            console.error(`${context} returned HTML instead of JSON (likely a login page or server error). Response snippet:`, trimmed.slice(0, 400));
+            return null;
+        }
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            console.error(`${context} returned invalid JSON`, e, text.slice(0, 800));
+            return null;
+        }
+    }
+
+    // ------------------------------
     // ASK / Chat
     // ------------------------------
     const handleSend = async () => {
@@ -202,13 +226,20 @@
             const res = await fetch('/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
                 body: JSON.stringify({ question, scope })
             });
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(text || `${res.status}`);
+
+            if (res.status === 401) {
+                addMessage('bot', 'You must be logged in to ask questions. Please login.', false);
+                return;
             }
-            const j = await res.json();
+
+            const j = await tryParseJsonResponse(res, '/ask');
+            if (!j) {
+                addMessage('bot', 'Server returned an unexpected response. See console for details.');
+                return;
+            }
             addMessage('bot', j.answer || j.error || 'No answer.', false);
         } catch (err) {
             console.error('ask error', err);
@@ -220,92 +251,67 @@
 
     // ------------------------------
     // Portfolio upload
-    // ---------------------- --------
- // Portfolio upload -> POST /analyze expects form field name "portfolioFile"
-const handlePortfolioUpload = async () => {
-  const file = portfolioFileInput && portfolioFileInput.files && portfolioFileInput.files[0];
-  if (!file) {
-    addMessage('bot', 'Please select a portfolio file first.');
-    return;
-  }
+    // ------------------------------
+    // Portfolio upload -> POST /analyze expects form field name "portfolioFile"
+    const handlePortfolioUpload = async () => {
+      const file = portfolioFileInput && portfolioFileInput.files && portfolioFileInput.files[0];
+      if (!file) {
+        addMessage('bot', 'Please select a portfolio file first.');
+        return;
+      }
 
-  addMessage('user', `Analyzing portfolio: ${file.name}`);
-  if (loadingIndicator) loadingIndicator.classList.remove('hidden');
+      addMessage('user', `Analyzing portfolio: ${file.name}`);
+      if (loadingIndicator) loadingIndicator.classList.remove('hidden');
 
-  const fd = new FormData();
-  fd.append('portfolioFile', file); // IMPORTANT: backend expects 'portfolioFile'
+      const fd = new FormData();
+      fd.append('portfolioFile', file); // IMPORTANT: backend expects 'portfolioFile'
 
-  try {
-    const res = await fetch('/analyze', {
-      method: 'POST',
-      body: fd,
-      credentials: 'same-origin' // send session cookie
-    });
+      try {
+        const res = await fetch('/analyze', {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin' // send session cookie
+        });
 
-    // If backend redirected to login (302) the browser may have followed it.
-    // Check for non-JSON / unauthorized responses
-    if (res.status === 401 || (res.redirected && res.url.includes('/login'))) {
-      addMessage('bot', 'You must be logged in to upload portfolios. Redirecting to login...');
-      setTimeout(() => window.location.href = '/login', 800);
-      return;
-    }
+        // If backend redirected to login (302) the browser may have followed it.
+        if (res.status === 401 || (res.redirected && res.url.includes('/login'))) {
+          addMessage('bot', 'You must be logged in to upload portfolios. Redirecting to login...');
+          setTimeout(() => window.location.href = '/login', 800);
+          return;
+        }
 
-    const text = await res.text();
-    let j = {};
-    try { j = text ? JSON.parse(text) : {}; } catch (e) {
-      // Some failures return HTML (login page), show useful message
-      throw new Error('Server returned unexpected response (not JSON). You may need to login.');
-    }
+        const j = await tryParseJsonResponse(res, '/analyze');
+        if (!j) throw new Error('Server returned unexpected response (not JSON). You may need to login.');
 
-    if (j.error) throw new Error(j.error);
+        if (j.error) throw new Error(j.error);
 
-    // open a new window with formatted analysis (server returns analysis_markdown & chart_data)
-    const html = createPortfolioPage(j.analysis_markdown || '', j.chart_data || {}, j.holdings || []);
-    const win = window.open('', '_blank');
-    if (!win) {
-      addMessage('bot', 'Could not open analysis window. Please allow popups.');
-      return;
-    }
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+        // open a new window with formatted analysis (server returns analysis_markdown & chart_data)
+        const html = createPortfolioPage(j.analysis_markdown || '', j.chart_data || {}, j.holdings || []);
+        const win = window.open('', '_blank');
+        if (!win) {
+          addMessage('bot', 'Could not open analysis window. Please allow popups.');
+          return;
+        }
+        win.document.open();
+        win.document.write(html);
+        win.document.close();
 
-    addMessage('bot', `<strong>Portfolio analyzed:</strong> ${file.name}`, true);
-    // optionally refresh dashboard
-    if (typeof loadDashboard === 'function') loadDashboard();
-  } catch (err) {
-    console.error('Portfolio analyze error', err);
-    addMessage('bot', `Portfolio analysis failed: ${err.message || err}`, true);
-  } finally {
-    if (loadingIndicator) loadingIndicator.classList.add('hidden');
-    if (portfolioFileInput) portfolioFileInput.value = '';
-  }
-};
+        addMessage('bot', `<strong>Portfolio analyzed:</strong> ${file.name}`, true);
+        // optionally refresh dashboard
+        if (typeof loadDashboard === 'function') loadDashboard();
+      } catch (err) {
+        console.error('Portfolio analyze error', err);
+        addMessage('bot', `Portfolio analysis failed: ${err.message || err}`, true);
+      } finally {
+        if (loadingIndicator) loadingIndicator.classList.add('hidden');
+        if (portfolioFileInput) portfolioFileInput.value = '';
+      }
+    };
 
-
-    // function createPortfolioPage(md, chartData = {}, holdings = []) {
-    //   // (same function body as before)
-    //   // We'll reuse the existing function you had for portfolio page creation.
-    //   // To keep script concise here, call the original implementation (you already have it above in your project).
-    //   // But for safety, if not present, fallback to a minimal page.
-    //   try {
-    //     // If the large createPortfolioPage implementation exists in global scope use that
-    //     if (typeof window.__createPortfolioPageImpl === 'function') {
-    //       return window.__createPortfolioPageImpl(md, chartData, holdings);
-    //     }
-    //   } catch (e) {
-    //     console.warn('createPortfolioPage helper not found, using simple fallback', e);
-    //   }
-    //   // Simple fallback:
-    //   const analysisHtml = converter.makeHtml(md || '');
-    //   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Portfolio Analysis</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></head><body><div>${analysisHtml}</div><script>console.log('fallback page');</script></body></html>`;
-    // }
     function createPortfolioPage(md, chartData) {
-  // We'll embed the converter logic inside the generated page so the new window can convert again.
-  const chartJson = JSON.stringify(chartData || {});
-  const mdEscaped = (md || '').replace(/`/g, '\\`').replace(/\$/g, '\\$'); // escape for template literal
-
-  return `<!doctype html>
+      const chartJson = JSON.stringify(chartData || {});
+      const mdEscaped = (md || '').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+      return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -313,252 +319,41 @@ const handlePortfolioUpload = async () => {
 <title>Portfolio Analysis - SEBI Saathi</title>
 <script src="https://cdn.jsdelivr.net/npm/showdown/dist/showdown.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root{--card-bg:#fff;--muted:#6b7280;}
-  body{font-family:'Inter',sans-serif;background:linear-gradient(180deg,#f8fafc 0%,#ffffff 100%);color:#111827;margin:0;padding:0;}
-  .container{max-width:1160px;margin:32px auto;padding:0 18px;}
-  .card{background:var(--card-bg);border:1px solid #e6edf3;border-radius:12px;padding:18px;box-shadow:0 6px 18px rgba(12,24,40,0.04);}
-  .k-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:13px;align-items:center;}
-  .k-legend > span{display:flex;align-items:center;gap:8px}
-  .legend-swatch{width:14px;height:10px;border-radius:3px;display:inline-block}
-  /* composition table styling */
-  .composition-table{width:100%;border-collapse:separate;border-spacing:0 6px;font-size:0.95rem}
-  .composition-table thead th{background:#f3f4f6;padding:10px;border-radius:8px;text-align:left;color:#111827;border:1px solid #e6edf3}
-  .composition-table tbody tr{background:#fff}
-  .composition-table td{padding:10px;border:1px solid #eef2f6}
-  .composition-table tbody tr:nth-child(odd){background:#fbfdff}
-  .composition-table tbody tr:hover{background:#f1f9ff;transform:translateX(2px);transition:all .12s ease}
-  .chart-wrapper{display:flex;gap:20px;align-items:flex-start}
-  .chart-box{flex:0 0 48%;min-height:420px;display:flex;align-items:center;justify-content:center}
-  .text-box{flex:1;max-height:420px;overflow:auto;padding-right:8px}
-  /* small screen fallback */
-  @media (max-width:900px){
-    .chart-wrapper{flex-direction:column}
-    .chart-box{flex-basis:auto;width:100%;min-height:300px}
-    .text-box{max-height:none}
-  }
+  body{font-family:'Inter',sans-serif;padding:20px;background:#f8fafc;color:#111}
+  pre{white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
-  <header class="bg-white border-b">
-    <div class="container flex items-center justify-between py-3">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
-        <div>
-          <div style="font-weight:700;color:#374151">SEBI Saathi — Portfolio Analysis</div>
-          <div style="font-size:12px;color:var(--muted)">AI-powered insights for your investments</div>
-        </div>
-      </div>
-      <button onclick="window.print()" class="bg-green-600 text-white px-3 py-1 rounded-md text-sm">Export Report</button>
-    </div>
-  </header>
-
-  <main class="container">
-    <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
-      <!-- main column -->
-      <section class="lg:col-span-3 space-y-6">
-        <div class="card">
-          <h2 class="text-lg font-semibold mb-4">AI-Powered Analysis</h2>
-          <div class="chart-wrapper">
-            <div class="chart-box">
-              <canvas id="portfolioChart" style="width:100%;height:100%"></canvas>
-            </div>
-
-            <div class="text-box" id="analysis-text">
-              <!-- converted markdown will appear here -->
-            </div>
-          </div>
-
-          <div class="k-legend" id="chart-legend"></div>
-        </div>
-
-        <div class="card">
-          <h3 class="text-md font-semibold mb-2">Portfolio Composition</h3>
-          <div id="composition-table" class="overflow-x-auto">
-            <!-- table will be injected here -->
-          </div>
-        </div>
-      </section>
-
-      <!-- sidebar -->
-      <aside class="lg:col-span-1 space-y-4">
-        <div class="card">
-          <h4 class="font-semibold mb-2">Quick Actions</h4>
-          <a href="/" class="text-indigo-600 block mb-1">← Back to Chat</a>
-          <a href="/dashboard" class="text-purple-600 block mb-1">📊 Dashboard</a>
-        </div>
-
-        <div class="card">
-          <h4 class="font-semibold mb-2">Analysis Info</h4>
-          <div class="text-sm text-gray-700">
-            <div class="flex justify-between"><span>Generated</span><span class="font-medium">Just now</span></div>
-            <div class="flex justify-between"><span>Model</span><span class="font-medium text-indigo-600">SEBI AI</span></div>
-            <div class="flex justify-between"><span>Confidence</span><span class="font-medium text-green-600">High</span></div>
-          </div>
-        </div>
-      </aside>
-    </div>
-  </main>
-
-<script>
-  (function(){
-    // Create converter and convert markdown to HTML in this new window
-    const converter = new showdown.Converter({tables:true, ghCompatibleHeaderId:true, tasklists:true});
-    const md = \`${mdEscaped}\`;
-    const fullHtml = converter.makeHtml(md || '');
-
-    // Insert the converted HTML into analysis-text
-    const analysisDiv = document.getElementById('analysis-text');
-    analysisDiv.innerHTML = fullHtml || '<p class="text-gray-500">No analysis returned.</p>';
-
-    // Extract a <table> element if present and move it to composition table
-    (function extractTable() {
-      const table = analysisDiv.querySelector('table');
-      const comp = document.getElementById('composition-table');
-      if (table) {
-        // clone and style
-        const t = table.cloneNode(true);
-        // add class/styling
-        t.className = 'composition-table';
-        // Remove table from analysis text
-        table.remove();
-        // Optionally transform header cells to nice header
-        comp.innerHTML = '';
-        comp.appendChild(t);
-      } else {
-        // If no table found, try to detect pipe-style markdown table converted to <pre> or code:
-        // show friendly message
-        comp.innerHTML = '<p class="text-gray-500">No composition data found.</p>';
-      }
-    })();
-
-    // Build chart using chartData passed from opener
-    const chartData = ${chartJson};
-    // Prepare color palette (repeatable)
-    const palette = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#06b6d4','#f97316','#64748b','#a78bfa','#60a5fa'];
-    const labels = Object.keys(chartData || {});
-    const values = Object.values(chartData || {}).map(v => Number(v) || 0);
-    const colors = labels.map((_,i)=> palette[i % palette.length]);
-
-    // create chart with responsive sizing
-    const ctx = document.getElementById('portfolioChart').getContext('2d');
-    // destroy previous if exists (just in case)
-    if (window._popupChart) try{ window._popupChart.destroy(); } catch(e) {}
-    window._popupChart = new Chart(ctx, {
-      type: 'doughnut',
-      data: {
-        labels: labels,
-        datasets: [{
-          data: values,
-          backgroundColor: colors,
-          borderColor: '#ffffff',
-          borderWidth: 2
-        }]
-      },
-      options: {
-        cutout: '58%',
-        plugins: {
-          legend: { display: false },
-          tooltip: { mode: 'index' }
-        },
-        maintainAspectRatio: false,
-        responsive: true
-      }
-    });
-
-    // Render a friendly legend under chart
-    (function renderLegend(){
-      const legendContainer = document.getElementById('chart-legend');
-      legendContainer.innerHTML = '';
-      labels.forEach((lbl, idx) => {
-        const span = document.createElement('span');
-        const sw = document.createElement('i');
-        sw.className = 'legend-swatch';
-        sw.style.background = colors[idx];
-        span.appendChild(sw);
-        const text = document.createElement('span');
-        text.textContent = lbl;
-        span.appendChild(text);
-        legendContainer.appendChild(span);
-      });
-    })();
-
-    // If the composition table exists and has numeric columns, add a total row & stripe formatting (improve)
-    (function enhanceTable(){
-      const comp = document.getElementById('composition-table');
-      const tbl = comp.querySelector('table');
-      if (!tbl) return;
-      // ensure thead/tbody exist
-      let thead = tbl.querySelector('thead');
-      let tbody = tbl.querySelector('tbody');
-      if (!thead) {
-        // try to make first row a header if table was simple
-        const firstRow = tbl.querySelector('tr');
-        if (firstRow) {
-          thead = document.createElement('thead');
-          thead.appendChild(firstRow.cloneNode(true));
-          // remove first original row from table (we'll move it)
-          firstRow.remove();
-          tbl.insertBefore(thead, tbl.firstChild);
-        }
-      }
-      if (!tbody) {
-        tbody = document.createElement('tbody');
-        // move remaining rows into tbody
-        Array.from(tbl.querySelectorAll('tr')).forEach(r => tbody.appendChild(r));
-        tbl.appendChild(tbody);
-      }
-      // add accessible classes to cells
-      Array.from(tbl.querySelectorAll('th')).forEach(th => th.style.padding = '10px');
-      Array.from(tbl.querySelectorAll('td')).forEach(td => td.style.padding = '10px');
-
-      // Optional: compute totals for numeric last column if obvious
+  <h2>Portfolio Analysis</h2>
+  <div id="analysis"></div>
+  <div id="chart" style="width:600px;height:360px;margin-top:20px">
+    <canvas id="portfolioChart"></canvas>
+  </div>
+  <script>
+    (function(){
+      const converter = new showdown.Converter({tables:true});
+      const md = \`${mdEscaped}\`;
+      document.getElementById('analysis').innerHTML = converter.makeHtml(md || '<p>No analysis returned.</p>');
+      const chartData = ${chartJson};
+      const labels = Object.keys(chartData || {});
+      const values = Object.values(chartData || {}).map(v=>Number(v)||0);
+      const ctx = document.getElementById('portfolioChart').getContext('2d');
       try {
-        const lastColIndex = Math.max(0, tbl.querySelectorAll('thead th').length - 1);
-        let sum = 0;
-        let count = 0;
-        Array.from(tbody.querySelectorAll('tr')).forEach(tr => {
-          const cells = tr.querySelectorAll('td');
-          if (cells && cells.length > lastColIndex) {
-            const v = Number(cells[lastColIndex].textContent.replace(/[₹, ]/g,'')) || 0;
-            sum += v;
-            count++;
-          }
+        new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels,
+            datasets: [{ data: values, backgroundColor: ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6'] }]
+          },
+          options: { responsive:true, maintainAspectRatio:false }
         });
-        if (count > 0 && sum > 0) {
-          const tfoot = document.createElement('tfoot');
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.colSpan = Math.max(1, lastColIndex);
-          td.textContent = 'Total';
-          td.style.fontWeight = '600';
-          td.style.padding = '10px';
-          const td2 = document.createElement('td');
-          td2.textContent = new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:0}).format(sum);
-          td2.style.fontWeight = '600';
-          td2.style.padding = '10px';
-          tr.appendChild(td);
-          tr.appendChild(td2);
-          tfoot.appendChild(tr);
-          tbl.appendChild(tfoot);
-        }
-      } catch(e){ /* ignore */ }
+      } catch(e) { console.error('Chart render failed in popup', e); }
     })();
-
-  })();
-</script>
+  </script>
 </body>
 </html>`;
-}
-
-
-    // If you included the full createPortfolioPage implementation in the HTML global,
-    // expose it for the function above to call:
-    if (window && !window.__createPortfolioPageImpl) {
-      // If you have the big implementation embedded inline in index.html already, skip.
-      // Otherwise we won't overwrite anything here.
     }
 
     // ------------------------------
@@ -569,25 +364,18 @@ const handlePortfolioUpload = async () => {
       if (!portfolioLineCanvas) return;
       try {
         const res = await fetch('/portfolio/history', { credentials: 'same-origin' });
-        if (!res.ok) {
-          // silently ignore if endpoint not available
+        if (res.status === 401) {
+          // not logged in or backend requires auth - silently return so UI can show login
           return;
         }
-        const j = await res.json();
-        if (!j.history || !Array.isArray(j.history) || j.history.length === 0) return;
+        const j = await tryParseJsonResponse(res, '/portfolio/history');
+        if (!j || !j.history || !Array.isArray(j.history) || j.history.length === 0) return;
 
-        // ensure Chart.js
-        try {
-          await ensureChartLoaded();
-        } catch (e) {
-          console.warn('Chart.js failed to load for portfolio history', e);
-          return;
-        }
+        try { await ensureChartLoaded(); } catch (e) { console.warn('Chart.js failed to load for portfolio history', e); return; }
 
         const labels = j.history.map(h => h.date);
         const data = j.history.map(h => h.value);
 
-        // destroy existing
         if (window._portfolioChart) {
           try { window._portfolioChart.destroy(); } catch(e){/*no-op*/ }
           window._portfolioChart = null;
@@ -596,28 +384,8 @@ const handlePortfolioUpload = async () => {
         const ctx = portfolioLineCanvas.getContext('2d');
         window._portfolioChart = new Chart(ctx, {
           type: 'line',
-          data: {
-            labels,
-            datasets: [{
-              label: 'Portfolio Value',
-              data,
-              tension: 0.25,
-              fill: true,
-              backgroundColor: 'rgba(59,130,246,0.08)',
-              borderColor: '#3b82f6',
-              pointRadius: 2,
-              borderWidth: 2
-            }]
-          },
-          options: {
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { display: true },
-              y: { display: true, beginAtZero: false }
-            },
-            maintainAspectRatio: false,
-            responsive: true
-          }
+          data: { labels, datasets: [{ label: 'Portfolio Value', data, tension:0.25, fill:true }] },
+          options: { plugins:{legend:{display:false}}, maintainAspectRatio:false, responsive:true }
         });
       } catch (err) {
         console.error('Failed to load portfolio history', err);
@@ -665,64 +433,61 @@ const handlePortfolioUpload = async () => {
 
     const loadUserLibrary = async () => {
         try {
-            const res = await fetch('/get_user_library');
-            const j = await res.json();
+            const res = await fetch('/get_user_library', { credentials: 'same-origin' });
+            if (res.status === 401) return updateUserLibrary([]);
+            const j = await tryParseJsonResponse(res, '/get_user_library');
+            if (!j) return;
             updateUserLibrary(j.user_library || []);
         } catch (e) {
             console.error('Could not load user library', e);
         }
     };
-// User library upload -> POST /upload_and_ingest expects form field name "userFile"
-const handleDocUpload = async () => {
-  const f = userFileInput && userFileInput.files && userFileInput.files[0];
-  if (!f) return;
 
-  addMessage('user', `Uploading ${f.name}`);
-  if (loadingIndicator) loadingIndicator.classList.remove('hidden');
+    // User library upload -> POST /upload_and_ingest expects form field name "userFile"
+    const handleDocUpload = async () => {
+      const f = userFileInput && userFileInput.files && userFileInput.files[0];
+      if (!f) return;
 
-  const fd = new FormData();
-  fd.append('userFile', f); // IMPORTANT: backend expects 'userFile'
+      addMessage('user', `Uploading ${f.name}`);
+      if (loadingIndicator) loadingIndicator.classList.remove('hidden');
 
-  try {
-    const res = await fetch('/upload_and_ingest', {
-      method: 'POST',
-      body: fd,
-      credentials: 'same-origin' // ensure session cookie is sent
-    });
+      const fd = new FormData();
+      fd.append('userFile', f); // IMPORTANT: backend expects 'userFile'
 
-    // handle redirect to login or unauthorized
-    if (res.status === 401 || (res.redirected && res.url.includes('/login'))) {
-      addMessage('bot', 'You must be logged in to upload documents. Redirecting to login...');
-      setTimeout(() => window.location.href = '/login', 800);
-      return;
-    }
+      try {
+        const res = await fetch('/upload_and_ingest', {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin'
+        });
 
-    const text = await res.text();
-    let j = {};
-    try { j = text ? JSON.parse(text) : {}; } catch (e) {
-      throw new Error('Server returned unexpected response (not JSON). You may need to login.');
-    }
+        if (res.status === 401 || (res.redirected && res.url.includes('/login'))) {
+          addMessage('bot', 'You must be logged in to upload documents. Redirecting to login...');
+          setTimeout(() => window.location.href = '/login', 800);
+          return;
+        }
 
-    if (!res.ok) {
-      throw new Error(j.error || `HTTP ${res.status}`);
-    }
+        const j = await tryParseJsonResponse(res, '/upload_and_ingest');
+        if (!j) throw new Error('Server returned unexpected response (not JSON). You may need to login.');
 
-    if (j.success) {
-      addMessage('bot', `<strong>${f.name}</strong> added to library.`, true);
-      updateUserLibrary(j.user_library || []);
-      // maybe refresh vectorstore or other UI bits
-    } else {
-      throw new Error(j.error || 'Upload failed');
-    }
-  } catch (e) {
-    console.error('upload error', e);
-    addMessage('bot', `Upload failed: ${e.message || e}`, true);
-  } finally {
-    if (loadingIndicator) loadingIndicator.classList.add('hidden');
-    if (userFileInput) userFileInput.value = '';
-  }
-};
+        if (!res.ok) {
+          throw new Error(j.error || `HTTP ${res.status}`);
+        }
 
+        if (j.success) {
+          addMessage('bot', `<strong>${f.name}</strong> added to library.`, true);
+          updateUserLibrary(j.user_library || []);
+        } else {
+          throw new Error(j.error || 'Upload failed');
+        }
+      } catch (e) {
+        console.error('upload error', e);
+        addMessage('bot', `Upload failed: ${e.message || e}`, true);
+      } finally {
+        if (loadingIndicator) loadingIndicator.classList.add('hidden');
+        if (userFileInput) userFileInput.value = '';
+      }
+    };
 
     const handleDeleteFile = async (filename) => {
         if (!confirm(`Delete ${filename}?`)) return;
@@ -730,10 +495,13 @@ const handleDocUpload = async () => {
         try {
             const res = await fetch('/delete_user_file', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filename })
             });
-            const j = await res.json();
+            if (res.status === 401) { addMessage('bot','You must be logged in to delete files.'); return; }
+            const j = await tryParseJsonResponse(res, '/delete_user_file');
+            if (!j) throw new Error('Unexpected delete response');
             if (j.success) {
                 addMessage('bot', `<strong>${filename}</strong> deleted.`, true);
                 updateUserLibrary(j.user_library || []);
@@ -753,8 +521,10 @@ const handleDocUpload = async () => {
         scamFeedbackEl && (scamFeedbackEl.innerHTML = '');
         scamQuestionEl.textContent = 'Loading...';
         try {
-            const res = await fetch('/quiz/next_question');
-            currentScamQuestion = await res.json();
+            const res = await fetch('/quiz/next_question', { credentials: 'same-origin' });
+            const j = await tryParseJsonResponse(res, '/quiz/next_question');
+            if (!j) { scamQuestionEl.textContent = 'Failed to load question.'; return; }
+            currentScamQuestion = j;
             scamQuestionEl.textContent = currentScamQuestion.message;
         } catch (e) {
             console.error('scam load error', e);
@@ -774,7 +544,6 @@ const handleDocUpload = async () => {
         const goal = sipGoalInput?.value, amount = sipAmountInput?.value, years = sipYearsInput?.value;
         if (!goal || !amount || !years) { sipResultEl.textContent = 'Please fill fields.'; return; }
 
-        // simple validation
         const amountNum = Number(amount);
         const yearsNum = Number(years);
         if (!isFinite(amountNum) || amountNum <= 0) { sipResultEl.textContent = 'Please enter a valid amount.'; return; }
@@ -785,13 +554,12 @@ const handleDocUpload = async () => {
             const res = await fetch('/calculate_sip', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
                 body: JSON.stringify({ amount: amountNum, years: yearsNum })
             });
 
-            // tolerate non-json responses
-            const text = await res.text();
-            let j;
-            try { j = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Server returned unexpected response'); }
+            const j = await tryParseJsonResponse(res, '/calculate_sip');
+            if (!j) { sipResultEl.textContent = 'Server returned unexpected response.'; return; }
 
             if (j.error) {
                 sipResultEl.textContent = j.error;
@@ -802,7 +570,6 @@ const handleDocUpload = async () => {
 
             sipResultEl.innerHTML = `Monthly SIP: <strong>₹${monthly.toLocaleString('en-IN')}</strong>`;
 
-            // if growth_data present — show chart
             if (Array.isArray(j.growth_data) && j.growth_data.length) {
                 try {
                     await ensureChartLoaded();
@@ -843,8 +610,10 @@ const handleDocUpload = async () => {
         mythFeedbackEl && (mythFeedbackEl.innerHTML = '');
         mythStatementEl.textContent = 'Loading...';
         try {
-            const res = await fetch('/get_myth');
-            currentMyth = await res.json();
+            const res = await fetch('/get_myth', { credentials: 'same-origin' });
+            const j = await tryParseJsonResponse(res, '/get_myth');
+            if (!j) { mythStatementEl.textContent = 'Failed to load.'; return; }
+            currentMyth = j;
             mythStatementEl.textContent = currentMyth.statement;
         } catch (e) {
             console.error('myth load', e);
@@ -864,10 +633,9 @@ const handleDocUpload = async () => {
         if (!sourcesListEl) return;
         sourcesListEl.innerHTML = '<div class="text-gray-500">Loading…</div>';
         try {
-            const res = await fetch('/sources');
-            const text = await res.text();
-            let j;
-            try { j = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Unexpected /sources response'); }
+            const res = await fetch('/sources', { credentials: 'same-origin' });
+            const j = await tryParseJsonResponse(res, '/sources');
+            if (!j) { sourcesListEl.innerHTML = '<div class="text-red-600">Failed to load sources.</div>'; return; }
 
             sourcesListEl.innerHTML = '';
             if (!j.sources || j.sources.length === 0) {
@@ -906,7 +674,6 @@ const handleDocUpload = async () => {
         }
     }
 
-    // open sources modal and load
     function openSourcesModal() {
         if (!sourcesModal) return;
         sourcesModal.classList.remove('hidden');
@@ -920,90 +687,70 @@ const handleDocUpload = async () => {
     if (sourcesModal) sourcesModal.addEventListener('click', (ev) => { if (ev.target === sourcesModal) sourcesModal.classList.add('hidden'); });
 
     // ------------------------------
-    // IPO Analyzer handlers (NEW)
+    // IPO Analyzer handlers (robust)
     // ------------------------------
-    // open modal
-    // ------------------------------
-// IPO Analyzer handlers (robust, sends credentials and refreshes list)
-// ------------------------------
-ipoForm && ipoForm.addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  ipoReportDiv && (ipoReportDiv.innerHTML = '<div class="text-sm text-gray-500">Analyzing IPO — please wait...</div>');
-  const file = ipoFileInput && ipoFileInput.files && ipoFileInput.files[0];
-  const pasted = ipoContentTextarea && ipoContentTextarea.value && ipoContentTextarea.value.trim();
+    ipoForm && ipoForm.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      ipoReportDiv && (ipoReportDiv.innerHTML = '<div class="text-sm text-gray-500">Analyzing IPO — please wait...</div>');
+      const file = ipoFileInput && ipoFileInput.files && ipoFileInput.files[0];
+      const pasted = ipoContentTextarea && ipoContentTextarea.value && ipoContentTextarea.value.trim();
 
-  try {
-    let res;
-    if (file) {
-      const fd = new FormData();
-      fd.append('ipoFile', file);
-      // include credentials so Flask login session is sent
-      res = await fetch('/ipo/analyze', { method: 'POST', body: fd, credentials: 'same-origin' });
-    } else if (pasted) {
-      res = await fetch('/ipo/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ content: pasted })
-      });
-    } else {
-      ipoReportDiv.innerHTML = '<div class="text-sm text-red-500">Please provide a PDF or paste IPO content.</div>';
-      return;
-    }
+      try {
+        let res;
+        if (file) {
+          const fd = new FormData();
+          fd.append('ipoFile', file);
+          res = await fetch('/ipo/analyze', { method: 'POST', body: fd, credentials: 'same-origin' });
+        } else if (pasted) {
+          res = await fetch('/ipo/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ content: pasted })
+          });
+        } else {
+          ipoReportDiv.innerHTML = '<div class="text-sm text-red-500">Please provide a PDF or paste IPO content.</div>';
+          return;
+        }
 
-    // handle redirect to login (Flask returns 302 -> browser may follow it; detect by non-json or redirected)
-    if (res.status === 401 || res.redirected || res.url?.includes('/login')) {
-      ipoReportDiv.innerHTML = '<div class="text-sm text-red-600">You must be logged in to analyze & save IPOs. Redirecting to login...</div>';
-      // optionally redirect
-      setTimeout(()=> { window.location.href = '/login'; }, 900);
-      return;
-    }
+        if (res.status === 401 || res.redirected || (res.url && res.url.includes('/login'))) {
+          ipoReportDiv.innerHTML = '<div class="text-sm text-red-600">You must be logged in to analyze & save IPOs. Redirecting to login...</div>';
+          setTimeout(()=> { window.location.href = '/login'; }, 900);
+          return;
+        }
 
-    const text = await res.text();
-    let j;
-    try { j = text ? JSON.parse(text) : {}; } catch (e) {
-      // server returned HTML (likely login page) or malformed JSON
-      console.error('Unexpected IPO analyze response (not JSON):', text);
-      ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: Unexpected server response.</div>`;
-      return;
-    }
+        const j = await tryParseJsonResponse(res, '/ipo/analyze');
+        if (!j) {
+          ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: Unexpected server response.</div>`;
+          return;
+        }
 
-    if (j.error) {
-      ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: ${escapeHtml(j.error)}</div>`;
-      return;
-    }
+        if (j.error) {
+          ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: ${escapeHtml(j.error)}</div>`;
+          return;
+        }
 
-    const md = j.ipo_report_md || j.ipo_report || 'No report returned.';
-    const html = converter.makeHtml(md || '');
-    ipoReportDiv.innerHTML = html;
+        const md = j.ipo_report_md || j.ipo_report || 'No report returned.';
+        const html = converter.makeHtml(md || '');
+        ipoReportDiv.innerHTML = html;
 
-    // show success message if saved (backend returns report_id when saved)
-    if (j.report_id) {
-      // show user-friendly confirmation and refresh saved reports area
-      const confirmEl = document.createElement('div');
-      confirmEl.className = 'mt-4 text-sm text-green-600';
-      confirmEl.innerHTML = `Report saved (ID: <strong>${j.report_id}</strong>). SEBI score: <strong>${j.sebi_score ?? 'N/A'}</strong>.`;
-      ipoReportDiv.prepend(confirmEl);
+        if (j.report_id) {
+          const confirmEl = document.createElement('div');
+          confirmEl.className = 'mt-4 text-sm text-green-600';
+          confirmEl.innerHTML = `Report saved (ID: <strong>${j.report_id}</strong>). SEBI score: <strong>${j.sebi_score ?? 'N/A'}</strong>.`;
+          ipoReportDiv.prepend(confirmEl);
+          if (typeof loadIpoReports === 'function') loadIpoReports();
+        } else {
+          ipoReportDiv.innerHTML += '<div class="text-sm text-yellow-600 mt-3">Report processed but not saved (no id returned).</div>';
+        }
 
-      // refresh list of saved IPO reports in dashboard
-      if (typeof loadIpoReports === 'function') {
-        loadIpoReports();
+        ipoReportDiv.scrollIntoView({ behavior: 'smooth' });
+      } catch (err) {
+        console.error('IPO analyze error', err);
+        ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: ${escapeHtml(err.message || err)}</div>`;
       }
-    } else {
-      // if backend did not return report_id, still reload as a precaution (or show note)
-      ipoReportDiv.innerHTML += '<div class="text-sm text-yellow-600 mt-3">Report processed but not saved (no id returned).</div>';
-    }
+    });
 
-    // scroll results into view
-    ipoReportDiv.scrollIntoView({ behavior: 'smooth' });
-  } catch (err) {
-    console.error('IPO analyze error', err);
-    ipoReportDiv.innerHTML = `<div class="text-sm text-red-600">Analysis failed: ${escapeHtml(err.message || err)}</div>`;
-  }
-});
-
-
-    // close modal clicking outside (optional)
     ipoModal && ipoModal.addEventListener('click', (e) => {
         if (e.target === ipoModal) ipoModal.classList.add('hidden');
     });
@@ -1043,8 +790,8 @@ ipoForm && ipoForm.addEventListener('submit', async (ev) => {
     // logout
     logoutBtn && logoutBtn.addEventListener('click', async () => {
         try {
-            const res = await fetch('/auth/logout', { method: 'POST' });
-            const j = await res.json().catch(()=>null);
+            const res = await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
+            const j = await tryParseJsonResponse(res, '/auth/logout');
             if (j && j.success) {
                 window.location.href = '/login';
             } else {
@@ -1063,13 +810,13 @@ ipoForm && ipoForm.addEventListener('submit', async (ev) => {
     // load portfolio history (if canvas exists)
     loadPortfolioHistory();
 
-    // ensure dashboard button exists (idempotent)
+    // keep dashboard button check idempotent
     (function ensureDashboardButton(){
         try {
             const nav = document.querySelector('nav') || document.querySelector('aside');
             if (!nav) return;
             if (!document.getElementById('dashboard-btn')) {
-                // if you want programmatic add; your template already has Dashboard link so this is optional
+                // optional insertion if needed
             }
         } catch (e) { /* no-op */ }
     })();
