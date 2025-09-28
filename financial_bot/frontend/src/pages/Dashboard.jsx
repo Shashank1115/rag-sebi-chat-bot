@@ -490,7 +490,6 @@ export default function Dashboard() {
                 <button onClick={compareSelectedIpos} className="px-3 py-1 bg-amber-500 text-white rounded-md">Compare Selected</button>
               </div>
             </div>
-
             <div id="ipoList" className="space-y-3">
               {ipoReports.length === 0 && <div className="text-sm text-gray-600">No saved IPO reports yet.</div>}
               {ipoReports.map(r => (

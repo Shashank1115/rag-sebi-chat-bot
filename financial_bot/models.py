@@ -2,10 +2,10 @@
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-
+from flask_login import UserMixin
 db = SQLAlchemy()
 
-class User(db.Model):
+class User(UserMixin,db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(120), unique=True, nullable=False)
@@ -42,4 +42,25 @@ class Holding(db.Model):
 
     portfolio = db.relationship("Portfolio", back_populates="holdings")
 
+class IpoReport(db.Model):
+    __tablename__ = "ipo_reports"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+
+    # What the UI shows
+    title = db.Column(db.String(512), nullable=True)
+    content_md = db.Column(db.Text, nullable=False)   # markdown shown in the modal
+    raw_text = db.Column(db.Text, nullable=True)      # optional stored text
+
+    # For the list + compare UI
+    sebi_score = db.Column(db.Integer, nullable=True)
+    llm_score = db.Column(db.Integer, nullable=True)
+
+    revenue = db.Column(db.String(128), nullable=True)
+    profit  = db.Column(db.String(128), nullable=True)
+    debt    = db.Column(db.String(128), nullable=True)
+    promoter_mentioned = db.Column(db.Boolean, default=False)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 

@@ -25,6 +25,8 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from urllib.parse import unquote, quote
+from models import db, User, Portfolio, Holding, IpoReport
+
 
 from flask import (
     Flask, request, jsonify, render_template, send_from_directory, session, Response, url_for, send_file, redirect
@@ -37,6 +39,11 @@ from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user, UserMixin
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+try:
+    import pdfplumber
+except Exception:
+    pdfplumber = None
 
 # LangChain / providers (placeholders; if not installed, initialization may fail but routes stay)
 try:
@@ -59,7 +66,7 @@ except Exception:
 from functools import lru_cache
 # markdown converter (server-side use)
 from markdown import markdown
-from werkzeug.utils import secure_filename
+# from werkzeug.utils import secure_filename
 
 # Local fallback embedder
 try:
@@ -92,6 +99,46 @@ except Exception:
 # --- Simple in-memory news cache ---
 NEWS_CACHE = {}
 NEWS_CACHE_TTL = 30 * 60  # 30 minutes
+
+TITLE_RE = re.compile(r"^\s*(draft\s+red\s+herring\s+prospectus|red\s+herring\s+prospectus|prospectus|ipo)\b.*", re.I)
+
+def derive_title_from_text(text: str) -> str:
+    lines = [l.strip() for l in text.splitlines()]
+    for l in lines[:200]:
+        if not l or l.startswith(("http", "www", "scan", "qr", "page")): continue
+        if len(l) > 8 and (l.isupper() or TITLE_RE.search(l)): return l[:180]
+    for l in lines:
+        if l and not l.lower().startswith(("please scan", "qr code", "table of contents")):
+            return l[:180]
+    return "IPO Report"
+
+def compute_ipo_score(text: str) -> int:
+    t = text.lower()
+    score = 50
+    if "profit" in t or "pat" in t: score += 10
+    if "revenue" in t or "total income" in t: score += 5
+    if "dividend" in t: score += 3
+    if "promoter" in t: score += 2
+    for key, p in [("loss",10),("negative cash flow",10),("high debt",10),
+                   ("pledge",8),("qualified opinion",12),("material uncertainty",10),
+                   ("related party",4),("litigation",6)]:
+        if key in t: score -= p
+    return max(0, min(100, score))
+
+FIN_NUM = re.compile(r"(?P<label>revenue|total\s+income|profit|pat|loss|debt|borrowings)[:\s₹$]*([\d,]+(\.\d+)?)\s*(cr|crore|bn|billion|mn|million|lakh|k)?", re.I)
+
+def extract_quick_facts(text: str):
+    facts = {"revenue": None, "profit": None, "debt": None, "promoter_mentioned": ("promoter" in text.lower())}
+    for m in FIN_NUM.finditer(text[:120_000]):
+        label = m.group("label").lower()
+        val = m.group(0)
+        if "revenue" in label or "total income" in label:
+            facts["revenue"] = facts["revenue"] or val
+        elif "profit" in label or "pat" in label or "loss" in label:
+            facts["profit"]  = facts["profit"]  or val
+        elif "debt" in label or "borrowings" in label:
+            facts["debt"]    = facts["debt"]    or val
+    return facts
 
 # --- Helpers for news ---
 def _is_probable_ticker(text: str) -> bool:
@@ -306,6 +353,12 @@ if not os.path.isdir(FRONTEND_DIST):
         FRONTEND_DIST = alt
 
 app = Flask(__name__, static_folder=None, template_folder=os.path.join(basedir, "templates"))
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///financial_bot.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+with app.app_context():
+    db.create_all()
 # We set static_folder=None because we serve the SPA build via custom routes
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
@@ -333,10 +386,10 @@ CORS(app,
      ]}})
 
 # --- Database config ---
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///financial_bot.db")
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-db = SQLAlchemy(app)
+# DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///financial_bot.db")
+# app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+# app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# db = SQLAlchemy(app)
 
 # --- Flask-Login ---
 login_manager = LoginManager()
@@ -378,52 +431,52 @@ EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "4"))
 EMBED_BACKOFF_BASE = float(os.getenv("EMBED_BACKOFF_BASE", "1.0"))
 
 # --- Models ---
-class User(UserMixin, db.Model):
-    __tablename__ = "users"
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(120), unique=True, nullable=False)
-    email = db.Column(db.String(255), unique=True, nullable=True)
-    password_hash = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    portfolios = db.relationship("Portfolio", back_populates="user", cascade="all, delete-orphan")
-    def set_password(self, password): self.password_hash = generate_password_hash(password)
-    def check_password(self, password): return check_password_hash(self.password_hash, password)
+# class User(UserMixin, db.Model):
+#     __tablename__ = "users"
+#     id = db.Column(db.Integer, primary_key=True)
+#     username = db.Column(db.String(120), unique=True, nullable=False)
+#     email = db.Column(db.String(255), unique=True, nullable=True)
+#     password_hash = db.Column(db.String(255), nullable=False)
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+#     portfolios = db.relationship("Portfolio", back_populates="user", cascade="all, delete-orphan")
+#     def set_password(self, password): self.password_hash = generate_password_hash(password)
+#     def check_password(self, password): return check_password_hash(self.password_hash, password)
 
-class Portfolio(db.Model):
-    __tablename__ = "portfolios"
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(200), default="My Portfolio")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    user = db.relationship("User", back_populates="portfolios")
-    holdings = db.relationship("Holding", back_populates="portfolio", cascade="all, delete-orphan")
+# class Portfolio(db.Model):
+#     __tablename__ = "portfolios"
+#     id = db.Column(db.Integer, primary_key=True)
+#     name = db.Column(db.String(200), default="My Portfolio")
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+#     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+#     user = db.relationship("User", back_populates="portfolios")
+#     holdings = db.relationship("Holding", back_populates="portfolio", cascade="all, delete-orphan")
 
-class Holding(db.Model):
-    __tablename__ = "holdings"
-    id = db.Column(db.Integer, primary_key=True)
-    symbol = db.Column(db.String(32), nullable=False, index=True)
-    quantity = db.Column(db.Float, nullable=False, default=0.0)
-    avg_price = db.Column(db.Float, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    portfolio_id = db.Column(db.Integer, db.ForeignKey("portfolios.id"), nullable=False)
-    portfolio = db.relationship("Portfolio", back_populates="holdings")
+# class Holding(db.Model):
+#     __tablename__ = "holdings"
+#     id = db.Column(db.Integer, primary_key=True)
+#     symbol = db.Column(db.String(32), nullable=False, index=True)
+#     quantity = db.Column(db.Float, nullable=False, default=0.0)
+#     avg_price = db.Column(db.Float, nullable=True)
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+#     portfolio_id = db.Column(db.Integer, db.ForeignKey("portfolios.id"), nullable=False)
+#     portfolio = db.relationship("Portfolio", back_populates="holdings")
 
-class IPOReport(db.Model):
-    __tablename__ = "ipo_reports"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    title = db.Column(db.String(512))
-    filename = db.Column(db.String(512), nullable=True)
-    content_md = db.Column(db.Text)
-    raw_text = db.Column(db.Text)
-    excerpt = db.Column(db.String(512), nullable=True)
-    heuristic_meta = db.Column(db.Text, nullable=True)
-    checklist = db.Column(db.Text, nullable=True)
-    overall_score = db.Column(db.Float, nullable=True)
-    sebi_score = db.Column(db.Float, nullable=True)
-    sebi_checks = db.Column(db.JSON, nullable=True)
-    llm_score = db.Column(db.Integer, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+# class IPOReport(db.Model):
+#     __tablename__ = "ipo_reports"
+#     id = db.Column(db.Integer, primary_key=True)
+#     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+#     title = db.Column(db.String(512))
+#     filename = db.Column(db.String(512), nullable=True)
+#     content_md = db.Column(db.Text)
+#     raw_text = db.Column(db.Text)
+#     excerpt = db.Column(db.String(512), nullable=True)
+#     heuristic_meta = db.Column(db.Text, nullable=True)
+#     checklist = db.Column(db.Text, nullable=True)
+#     overall_score = db.Column(db.Float, nullable=True)
+#     sebi_score = db.Column(db.Float, nullable=True)
+#     sebi_checks = db.Column(db.JSON, nullable=True)
+#     llm_score = db.Column(db.Integer, nullable=True)
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # --- Flask-Login user loader ---
 @login_manager.user_loader
@@ -1577,7 +1630,7 @@ def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
                           sebi_score=None, sebi_checks=None, llm_score=None,
                           heuristic_meta=None, checklist=None, overall_score=None):
     try:
-        rpt = IPOReport(
+        rpt = IpoReport(
             user_id=user_id,
             title=(title or (filename or "IPO Report"))[:512],
             filename=(filename or None),
@@ -1600,7 +1653,7 @@ def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
         raise
 
 def list_user_ipo_reports(user_id):
-    rows = IPOReport.query.filter_by(user_id=user_id).order_by(IPOReport.created_at.desc()).all()
+    rows = IpoReport.query.filter_by(user_id=user_id).order_by(IpoReport.created_at.desc()).all()
     out = []
     for r in rows:
         out.append({
@@ -1610,192 +1663,187 @@ def list_user_ipo_reports(user_id):
         })
     return out
 
-@app.route('/ipo/analyze', methods=['POST'])
+@app.post("/ipo/analyze")
 @login_required
 def ipo_analyze():
-    try:
-        text = ""; uploaded_filename = None
-        if 'ipoFile' in request.files and request.files['ipoFile'].filename:
-            f = request.files['ipoFile']; uploaded_filename = secure_filename(f.filename)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_filename)[1])
+    text = None
+
+    # file upload path
+    if "ipoFile" in request.files and request.files["ipoFile"]:
+        f = request.files["ipoFile"]
+        filename = secure_filename(f.filename or "ipo.pdf")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=pathlib.Path(filename).suffix) as tmp:
             f.save(tmp.name)
+            path = tmp.name
+
+        if filename.lower().endswith(".pdf"):
+            if not pdfplumber:
+                return jsonify(error="PDF support not installed. pip install pdfplumber"), 400
             try:
-                if uploaded_filename.lower().endswith('.pdf'):
-                    text = extract_text_from_pdf(tmp.name)
-                else:
-                    with open(tmp.name, 'rb') as fh:
-                        text = fh.read().decode('utf-8', errors='ignore')
+                pages = []
+                with pdfplumber.open(path) as pdf:
+                    for p in pdf.pages[:40]:
+                        pages.append(p.extract_text() or "")
+                text = "\n".join(pages)
             finally:
-                try: os.remove(tmp.name)
+                try: os.remove(path)
                 except Exception: pass
-        elif request.form.get('content'):
-            text = request.form.get('content')[:150000]
-        elif request.json and request.json.get('content'):
-            text = request.json.get('content')[:150000]
+        else:
+            text = open(path, "r", errors="ignore", encoding="utf-8").read()
+            try: os.remove(path)
+            except Exception: pass
 
-        if not text or not text.strip():
-            return jsonify({'error': 'No IPO content provided.'}), 400
+    # pasted text path
+    elif request.is_json:
+        text = (request.json or {}).get("content", "")
 
-        meta = simple_rule_extract(text)
-        lower = text.lower()
-        SEBI_KEYWORDS = {
-            "financials": ["revenue","turnover","net profit","profit","loss","audited","financial statements","balance sheet","profit and loss","cash flow"],
-            "governance": ["promoter","promoters","shareholding","board","independent director","chairman","audit committee","related party"],
-            "use_of_proceeds": ["use of proceeds","objects of the issue","utilisation","utilization","funds will be used","proceeds of the issue"],
-            "business_risks": ["risk factors","risks","contingent liabilities","litigation","regulatory","competition","uncertain"],
-            "market_position": ["market share","industry","competition","market position","competitive","growth drivers"],
-            "compliance": ["sebi","regulatory approval","approval from","filing with sebi","compliance","disclosure","red herring prospectus","drhp","rhp"]
-        }
-        WEIGHTS = {"financials":25,"governance":20,"use_of_proceeds":20,"business_risks":15,"market_position":10,"compliance":10}
-        per_check = {}; total_score = 0.0
-        for key, label in IPO_CHECKLIST:
-            kws = SEBI_KEYWORDS.get(key, []); found=False; reason=""
-            for kw in kws:
-                if kw in lower:
-                    found=True; reason=f"Found keyword '{kw}'"; break
-            status = "Verified" if found else "Missing"
-            per_check[key] = {"label": label, "status": status, "notes": reason}
-            if found: total_score += WEIGHTS.get(key, 0)
-        sebi_score = round(total_score, 2)
+    if not text or not text.strip():
+        return jsonify(error="No IPO content found."), 400
 
-        report_md = ""
-        try:
-            if llm is None:
-                raise Exception("LLM not initialized")
-            excerpt = text[:8000]
-            prompt = [
-                "You are 'SEBI Saathi', an IPO analyst. Analyze the following IPO prospectus/excerpt and produce a structured report.",
-                "Follow these steps exactly:",
-                "1) For each checklist item, say: status = {Verified | Partially Verified | Missing}, short reason (1-2 lines).",
-                "2) Extract key facts: revenue, profit, debt amounts (if present), promoter stake (if present), stated use of proceeds.",
-                "3) Provide growth-positive factors (bullet list), risks (bullet list).",
-                "4) Provide a 1-5 priority score per checklist item and an overall IPO score (out of 30).",
-                "5) Output final result as MARKDOWN only. No apologies, no meta text.",
-                "",
-                "CHECKLIST:",
-            ]
-            for _, label in IPO_CHECKLIST: prompt.append(f"- {label}")
-            prompt.append("\nPROSPECTUS EXCERPT:\n"); prompt.append(excerpt)
-            formatted_prompt = "\n".join(prompt)
-            result = llm.invoke(formatted_prompt)
-            report_md = getattr(result, 'content', str(result))
-        except Exception as e:
-            logger.exception("LLM-based IPO analysis failed; using heuristic fallback: %s", e)
-            parts = []
-            parts.append("# IPO Quick Analysis (heuristic fallback)")
-            parts.append("")
-            parts.append("**Extracted facts (heuristic):**")
-            if meta:
-                for k, v in meta.items():
-                    parts.append(f"- **{k.replace('_',' ').title()}:** {v}")
-            else:
-                parts.append("- No clear numeric facts found in the provided excerpt.")
-            parts.append("")
-            parts.append("**Checklist (heuristic / not exhaustive):**")
-            for k, v in per_check.items():
-                parts.append(f"- **{v['label']}**: **{v['status']}**. {v['notes']}")
-            parts.append("")
-            parts.append("**Growth positives (heuristic):**")
-            parts.append("- Could not determine automatically — provide more text or use LLM.")
-            parts.append("")
-            parts.append("**Risks (heuristic):**")
-            parts.append("- Not analyzed in-depth in fallback mode.")
-            parts.append("")
-            parts.append(f"**SEBI-style compliance score (heuristic):** {sebi_score}/100")
-            report_md = "\n".join(parts)
+    title = derive_title_from_text(text)
+    score = compute_ipo_score(text)
+    facts = extract_quick_facts(text)
 
-        user_id = current_user.id if current_user else session.get('user_id')
-        first_line = (text.splitlines() or [''])[0]
-        title_guess = first_line.strip()[:200] if first_line and len(first_line.strip()) > 5 else None
-        title = title_guess or uploaded_filename or "IPO analysis"
-        overall_score = None
-        m = re.search(r'[Ss]core\s*:\s*([0-9]{1,3})\s*/\s*30', report_md or "")
-        if m:
-            try: overall_score = float(m.group(1))
-            except: overall_score = None
-        new_id = None
-        try:
-            new_id = save_ipo_report_to_db(
-                user_id=user_id,
-                title=title,
-                filename=uploaded_filename,
-                content_md=report_md,
-                raw_text=text,
-                sebi_score=sebi_score,
-                sebi_checks=per_check,
-                llm_score=None,
-                heuristic_meta=meta,
-                checklist=per_check,
-                overall_score=overall_score
-            )
-        except Exception:
-            logger.exception("Failed to save IPO report to DB")
-            new_id = None
-        return jsonify({'ipo_report_md': report_md, 'report_id': new_id, 'sebi_score': sebi_score})
-    except Exception:
-        app.logger.error("IPO analyze error:\n" + traceback.format_exc())
-        return jsonify({'error': 'Internal server error during IPO analysis.'}), 500
+    md = (
+        f"# {title}\n\n**Heuristic Score:** {score}/100\n\n"
+        f"**Revenue:** {facts['revenue'] or '—'}  \n"
+        f"**Profit:** {facts['profit'] or '—'}  \n"
+        f"**Debt:** {facts['debt'] or '—'}  \n"
+        f"**Promoter Mentioned:** {'Yes' if facts['promoter_mentioned'] else 'No'}\n\n"
+        f"---\n\n## Extracted Text (truncated)\n\n" + (text[:100_000])
+    )
 
-@app.route('/ipo/list', methods=['GET'])
+    r = IpoReport(
+        user_id=current_user.id,
+        title=title,
+        content_md=md,
+        raw_text=text[:200_000],
+        sebi_score=score,
+        revenue=facts["revenue"],
+        profit=facts["profit"],
+        debt=facts["debt"],
+        promoter_mentioned=facts["promoter_mentioned"],
+    )
+    db.session.add(r)
+    db.session.commit()
+
+    return jsonify({
+        "report_id": r.id,
+        "ipo_report_md": md,
+        "title": title,
+        "sebi_score": score,
+    })
+    
+@app.get("/ipo/list")
 @login_required
 def ipo_list():
-    try:
-        reports = list_user_ipo_reports(current_user.id)
-        return jsonify({'reports': reports})
-    except Exception:
-        logger.exception("Failed to list IPO reports")
-        return jsonify({'error': 'Failed to retrieve reports'}), 500
+    rows = (IpoReport.query
+            .filter_by(user_id=current_user.id)
+            .order_by(IpoReport.created_at.desc())
+            .limit(200).all())
+    return jsonify({
+        "reports": [{
+            "id": r.id,
+            "title": r.title or f"Report #{r.id}",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "sebi_score": r.sebi_score,
+            "llm_score": r.llm_score,
+        } for r in rows]
+    })
 
-@app.route('/ipo/get/<int:report_id>', methods=['GET'])
+
+# @app.route('/ipo/get/<int:report_id>', methods=['GET'])
+# @login_required
+# def ipo_get(report_id):
+    
+#     r = IPOReport.query.get(report_id)
+#     if not r or r.user_id != current_user.id:
+#         return jsonify({'error': 'report not found'}), 404
+#     try:
+#         return jsonify({
+#             'id': r.id,
+#             'title': r.title,
+#             'created_at': r.created_at.isoformat() if r.created_at else None,
+#             'content_md': r.content_md,
+#             'heuristic_meta': json.loads(r.heuristic_meta or "{}"),
+#             'checklist': json.loads(r.checklist or "[]"),
+#             'overall_score': r.overall_score
+#         })
+#     except Exception:
+#         logger.exception("Failed to load IPO report")
+#         return jsonify({'error': 'Failed to load report'}), 500
+
+@app.get("/ipo/get/<int:rid>")
 @login_required
-def ipo_get(report_id):
-    r = IPOReport.query.get(report_id)
-    if not r or r.user_id != current_user.id:
-        return jsonify({'error': 'report not found'}), 404
-    try:
-        return jsonify({
-            'id': r.id,
-            'title': r.title,
-            'created_at': r.created_at.isoformat() if r.created_at else None,
-            'content_md': r.content_md,
-            'heuristic_meta': json.loads(r.heuristic_meta or "{}"),
-            'checklist': json.loads(r.checklist or "[]"),
-            'overall_score': r.overall_score
-        })
-    except Exception:
-        logger.exception("Failed to load IPO report")
-        return jsonify({'error': 'Failed to load report'}), 500
+def ipo_get(rid):
+    r = IpoReport.query.filter_by(id=rid, user_id=current_user.id).first()
+    if not r:
+        return jsonify(error="Not found"), 404
+    return jsonify({
+        "id": r.id,
+        "title": r.title,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "content_md": r.content_md,
+        "sebi_score": r.sebi_score,
+    })
 
-@app.route('/ipo/compare', methods=['GET'])
+
+
+
+# @app.route('/ipo/compare', methods=['GET'])
+# @login_required
+# def ipo_compare():
+#     ids_raw = request.args.get('ids', '')
+#     if not ids_raw:
+#         return jsonify({'error': 'ids query param required (comma-separated)'}), 400
+#     try:
+#         ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()]
+#     except Exception:
+#         return jsonify({'error': 'Invalid ids param'}), 400
+#     reports = IPOReport.query.filter(IPOReport.id.in_(ids), IPOReport.user_id == current_user.id).all()
+#     if not reports:
+#         return jsonify({'error': 'No reports found for given ids'}), 404
+#     cmp_rows = []
+#     for r in reports:
+#         try:
+#             meta = json.loads(r.heuristic_meta or "{}")
+#         except:
+#             meta = {}
+#         cmp_rows.append({
+#             'id': r.id,
+#             'title': r.title,
+#             'created_at': r.created_at.isoformat() if r.created_at else None,
+#             'revenue': meta.get('revenue'),
+#             'profit': meta.get('profit'),
+#             'debt': meta.get('debt'),
+#             'promoter_mentioned': meta.get('promoter_mentioned', False),
+#             'overall_score': r.overall_score
+#         })
+#     return jsonify({'comparison': cmp_rows})
+
+@app.get("/ipo/compare")
 @login_required
 def ipo_compare():
-    ids_raw = request.args.get('ids', '')
-    if not ids_raw:
-        return jsonify({'error': 'ids query param required (comma-separated)'}), 400
-    try:
-        ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()]
-    except Exception:
-        return jsonify({'error': 'Invalid ids param'}), 400
-    reports = IPOReport.query.filter(IPOReport.id.in_(ids), IPOReport.user_id == current_user.id).all()
-    if not reports:
-        return jsonify({'error': 'No reports found for given ids'}), 404
-    cmp_rows = []
-    for r in reports:
-        try:
-            meta = json.loads(r.heuristic_meta or "{}")
-        except:
-            meta = {}
-        cmp_rows.append({
-            'id': r.id,
-            'title': r.title,
-            'created_at': r.created_at.isoformat() if r.created_at else None,
-            'revenue': meta.get('revenue'),
-            'profit': meta.get('profit'),
-            'debt': meta.get('debt'),
-            'promoter_mentioned': meta.get('promoter_mentioned', False),
-            'overall_score': r.overall_score
+    ids = request.args.get("ids", "")
+    id_list = [int(i) for i in ids.split(",") if i.isdigit()]
+    rows = IpoReport.query.filter(
+        IpoReport.user_id == current_user.id,
+        IpoReport.id.in_(id_list)
+    ).all()
+
+    out = []
+    for r in rows:
+        out.append({
+            "title": r.title,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "revenue": r.revenue,
+            "profit": r.profit,
+            "debt": r.debt,
+            "promoter_mentioned": bool(r.promoter_mentioned),
+            "overall_score": r.sebi_score if r.sebi_score is not None else r.llm_score,
         })
-    return jsonify({'comparison': cmp_rows})
+    return jsonify({"comparison": out})
+
 
 # ---------- Quiz / myth / SIP ----------
 @app.route('/quiz/next_question', methods=['GET'])
@@ -1940,7 +1988,7 @@ def source_viewer(filename):
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
     try:
-        data = request.json
+        data = request.get_json(force=True, silent=True) or {}
         username = data.get("username", "").strip()
         email = data.get("email", "").strip().lower()
         password = data.get("password", "")
