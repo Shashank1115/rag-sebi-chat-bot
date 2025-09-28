@@ -1,4 +1,4 @@
-# backend.py
+# final backend.py
 """
 Full backend for SEBI Saathi (combined features + static SPA serving).
 - Serves frontend build from frontend/dist (if exists)
@@ -66,6 +66,28 @@ try:
     from sentence_transformers import SentenceTransformer
 except Exception:
     SentenceTransformer = None
+
+# --- FAISS / LangChain-FAISS detection (non-intrusive additions) ---
+# Try LangChain FAISS wrapper at common import paths
+try:
+    try:
+        from langchain.vectorstores import FAISS as LC_FAISS
+        LC_FAISS_AVAILABLE = True
+    except Exception:
+        from langchain_community.vectorstores import FAISS as LC_FAISS
+        LC_FAISS_AVAILABLE = True
+except Exception:
+    LC_FAISS = None
+    LC_FAISS_AVAILABLE = False
+
+# Try native faiss if installed
+try:
+    import faiss
+    FAISS_NATIVE = True
+except Exception:
+    faiss = None
+    FAISS_NATIVE = False
+# --------------------------------------------------------------------
 
 # --- Simple in-memory news cache ---
 NEWS_CACHE = {}
@@ -213,7 +235,7 @@ def _fetch_news_google(query: str, max_headlines: int):
     try:
         q = urllib.parse.quote_plus(f"{query} stock")
         search_url = f"https://www.google.com/search?q={q}&tbm=nws"
-        headers = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+        headers = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari:537.36"}
         r = requests.get(search_url, headers=headers, timeout=8)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
@@ -490,6 +512,106 @@ def similarity_search_with_fallback(query: str, k: int = 4, user_vector_store_pa
         raise
 
 # -----------------------
+# FAISS fallback loader (non-intrusive)
+# -----------------------
+def try_load_faiss_store(path: str, embeddings_obj=None):
+    """
+    Try to load a FAISS-backed store from `path`.
+    Attempts LangChain wrapper load_local or native faiss.index + metas.json.
+    Returns an object with similarity_search(query, k) if successful, else None.
+    """
+    if not os.path.exists(path):
+        return None
+
+    # 1) Try LangChain wrapper load_local (if available)
+    if LC_FAISS_AVAILABLE and LC_FAISS is not None:
+        try:
+            # Many LangChain versions accept load_local(path, embeddings=embeddings_obj)
+            store = LC_FAISS.load_local(path, embeddings=embeddings_obj)
+            logging.getLogger('backend').info("Loaded FAISS store via LangChain wrapper from %s", path)
+            return store
+        except Exception as e:
+            logging.getLogger('backend').warning("LC_FAISS.load_local failed: %s", e)
+
+    # 2) Try native FAISS + metas.json adapter
+    try:
+        faiss_index_path = os.path.join(path, 'faiss.index')
+        metas_path = os.path.join(path, 'metas.json')
+        if FAISS_NATIVE and os.path.exists(faiss_index_path) and os.path.exists(metas_path):
+            idx = faiss.read_index(faiss_index_path)
+            with open(metas_path, 'r', encoding='utf8') as fh:
+                metas = json.load(fh)
+
+            class FaissAdapter:
+                def __init__(self, index, metas, embed_fn):
+                    self.index = index
+                    self.metas = metas
+                    self.embed_fn = embed_fn
+
+                def similarity_search(self, query, k=4):
+                    try:
+                        qv = self.embed_fn([query])
+                        qv = np.asarray(qv, dtype=np.float32)
+                        faiss.normalize_L2(qv)
+                        D, I = self.index.search(qv, k)
+                        out = []
+                        for idx_i, dist in zip(I[0], D[0]):
+                            if idx_i < 0: continue
+                            meta = self.metas[idx_i] if idx_i < len(self.metas) else {}
+                            class Doc:
+                                def __init__(self, page_content, metadata):
+                                    self.page_content = page_content
+                                    self.metadata = metadata
+                            page = meta.get('page_content') or meta.get('text') or meta.get('content') or ''
+                            out.append(Doc(page, meta))
+                        return out
+                    except Exception:
+                        logging.getLogger('backend').exception('FaissAdapter search failed')
+                        return []
+
+                def similarity_search_by_vector(self, vec, k=4):
+                    try:
+                        v = np.asarray(vec, dtype=np.float32)
+                        faiss.normalize_L2(v)
+                        D, I = self.index.search(v, k)
+                        out = []
+                        for idx_i in I[0]:
+                            if idx_i < 0: continue
+                            meta = metas[idx_i] if idx_i < len(metas) else {}
+                            class Doc:
+                                def __init__(self, page_content, metadata):
+                                    self.page_content = page_content
+                                    self.metadata = metadata
+                            page = meta.get('page_content') or meta.get('text') or meta.get('content') or ''
+                            out.append(Doc(page, meta))
+                        return out
+                    except Exception:
+                        logging.getLogger('backend').exception('FaissAdapter vector search failed')
+                        return []
+
+            # Determine embedding function: prefer embeddings_obj.embed_query/embed_documents if present; else SentenceTransformer
+            embed_fn = None
+            if embeddings_obj is not None:
+                try:
+                    if hasattr(embeddings_obj, 'embed_query') and hasattr(embeddings_obj, 'embed_documents'):
+                        embed_fn = lambda texts: embeddings_obj.embed_documents(texts)
+                    elif hasattr(embeddings_obj, 'embed_documents'):
+                        embed_fn = lambda texts: embeddings_obj.embed_documents(texts)
+                except Exception:
+                    embed_fn = None
+            if embed_fn is None:
+                if SentenceTransformer is not None:
+                    st = SentenceTransformer(os.getenv('LOCAL_EMBED_MODEL','all-MiniLM-L6-v2'))
+                    embed_fn = lambda texts: st.encode(texts, convert_to_numpy=True)
+                else:
+                    logging.getLogger('backend').warning("No embedding function available to use with native FAISS adapter.")
+                    return None
+            return FaissAdapter(idx, metas, embed_fn)
+    except Exception:
+        logging.getLogger('backend').exception('Failed to load native FAISS store')
+        return None
+
+# -----------------------
 # Initialize models, LLM, embeddings, prompts, vector DB
 # -----------------------
 def initialize_app():
@@ -505,7 +627,10 @@ def initialize_app():
         else:
             llm = None
         if HuggingFaceEmbeddings is not None:
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            try:
+                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            except Exception:
+                embeddings = None
         else:
             embeddings = None
 
@@ -517,7 +642,14 @@ def initialize_app():
                 logger.exception("Failed to open/create main Chroma vectorstore")
                 db_main = None
         else:
-            db_main = None
+            # FAISS fallback attempt (non-intrusive)
+            logger.info("Chroma not available or embeddings missing; attempting FAISS load as fallback")
+            faiss_store = try_load_faiss_store(VECTOR_STORE_PATH_MAIN, embeddings_obj=embeddings)
+            if faiss_store is not None:
+                db_main = faiss_store
+                logger.info("FAISS store loaded into db_main")
+            else:
+                db_main = None
 
         scam_data = safe_load_json(os.path.join(DATA_PATH, 'scam_examples.json'))
         myth_data = safe_load_json(os.path.join(DATA_PATH, 'myths.json'))
@@ -1016,7 +1148,7 @@ def fetch_headlines_for_symbol(symbol, api_key=None, max_headlines=5):
     try:
         query = urllib.parse.quote_plus(f"{symbol} stock")
         search_url = f"https://www.google.com/search?q={query}&tbm=nws"
-        headers = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+        headers = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari:537.36"}
         r = requests.get(search_url, headers=headers, timeout=8)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
