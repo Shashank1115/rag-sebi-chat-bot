@@ -215,7 +215,7 @@ def _fetch_news_alphavantage(symbol: str, max_headlines: int):
 def _fetch_news_newsapi(query: str, max_headlines: int, api_key: str):
     try:
         q = f'"{query}" (stock OR shares OR company) (NSE OR BSE OR India)'
-        params = {"q": q, "language":"en", "sortBy":"publishedAt", "pageSize": max_headlines, "apiKey": api_key}
+        params = {"q": q, "language": "en", "sortBy":"publishedAt", "pageSize": max_headlines, "apiKey": api_key}
         r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=8)
         r.raise_for_status()
         data = r.json() or {}
@@ -517,35 +517,82 @@ def similarity_search_with_fallback(query: str, k: int = 4, user_vector_store_pa
 def try_load_faiss_store(path: str, embeddings_obj=None):
     """
     Try to load a FAISS-backed store from `path`.
-    Attempts LangChain wrapper load_local or native faiss.index + metas.json.
-    Returns an object with similarity_search(query, k) if successful, else None.
+    Order:
+      1) Prefer LangChain wrapper load_local(..., allow_dangerous_deserialization=True)
+      2) Fallback: native faiss.index + metas.json / index.pkl adapter
+    Returns an object that exposes similarity_search(query, k) or similarity_search_by_vector(vec, k)
     """
     if not os.path.exists(path):
+        app_logger().info("try_load_faiss_store: path does not exist: %s", path)
         return None
 
-    # 1) Try LangChain wrapper load_local (if available)
+    # 1) Try LangChain wrapper load_local with allow_dangerous_deserialization=True
     if LC_FAISS_AVAILABLE and LC_FAISS is not None:
         try:
-            # Many LangChain versions accept load_local(path, embeddings=embeddings_obj)
-            store = LC_FAISS.load_local(path, embeddings=embeddings_obj)
-            logging.getLogger('backend').info("Loaded FAISS store via LangChain wrapper from %s", path)
+            # Some LangChain versions accept 'embeddings=' parameter name
+            try:
+                store = LC_FAISS.load_local(path, embeddings=embeddings_obj, allow_dangerous_deserialization=True)
+            except TypeError:
+                # older/newer signatures might differ; try positional
+                store = LC_FAISS.load_local(path, allow_dangerous_deserialization=True)
+            app_logger().info("Loaded FAISS store via LangChain wrapper from %s (deserialized)", path)
             return store
         except Exception as e:
-            logging.getLogger('backend').warning("LC_FAISS.load_local failed: %s", e)
+            app_logger().warning("LC_FAISS.load_local (deserialized) failed for %s: %s", path, e)
 
-    # 2) Try native FAISS + metas.json adapter
+    # 2) Try native FAISS + metas.json / index.pkl adapter
     try:
-        faiss_index_path = os.path.join(path, 'faiss.index')
-        metas_path = os.path.join(path, 'metas.json')
-        if FAISS_NATIVE and os.path.exists(faiss_index_path) and os.path.exists(metas_path):
+        faiss_index_path = os.path.join(path, 'index.faiss')
+        metas_path_json = os.path.join(path, 'metas.json')
+        metas_path_pkl = os.path.join(path, 'index.pkl')
+        if FAISS_NATIVE and os.path.exists(faiss_index_path):
             idx = faiss.read_index(faiss_index_path)
-            with open(metas_path, 'r', encoding='utf8') as fh:
-                metas = json.load(fh)
+            # Load metas: prefer metas.json, then index.pkl
+            metas = []
+            if os.path.exists(metas_path_json):
+                try:
+                    with open(metas_path_json, 'r', encoding='utf8') as fh:
+                        metas = json.load(fh)
+                except Exception:
+                    app_logger().warning("Failed to load metas.json; will try index.pkl")
+            if not metas and os.path.exists(metas_path_pkl):
+                try:
+                    import pickle
+                    with open(metas_path_pkl, 'rb') as fh:
+                        metas = pickle.load(fh)
+                    # If pickle is a tuple like (InMemoryDocstore, mapping), try to extract mapping values
+                    if isinstance(metas, tuple) and len(metas) >= 2:
+                        # some langchain versions persist (docstore, id_to_uuid_mapping)
+                        docstore, idmap = metas[0], metas[1]
+                        # if docstore has get method, reconstruct metas by idmap order
+                        try:
+                            reconstructed = []
+                            if isinstance(idmap, dict):
+                                for i in range(len(idmap)):
+                                    uuid = idmap.get(i) or idmap.get(str(i))
+                                    if uuid and hasattr(docstore, "search") is False:
+                                        # try to fetch doc by key if available (docstore may expose dict-like)
+                                        try:
+                                            doc = docstore._dict.get(uuid) if hasattr(docstore, "_dict") else None
+                                            if doc:
+                                                reconstructed.append({"page_content": getattr(doc, "page_content", ""), **getattr(doc, "metadata", {})})
+                                                continue
+                                        except Exception:
+                                            pass
+                            if reconstructed:
+                                metas = reconstructed
+                        except Exception:
+                            pass
+                except Exception:
+                    app_logger().warning("Failed to unpickle index.pkl; metas may be incomplete.")
+            # If still no metas, keep metas as empty list
+            if not metas:
+                app_logger().warning("Loaded faiss index but no metas found (path=%s). Search may return empty metadata.", path)
 
             class FaissAdapter:
                 def __init__(self, index, metas, embed_fn):
                     self.index = index
-                    self.metas = metas
+                    self.metas = metas or []
                     self.embed_fn = embed_fn
 
                 def similarity_search(self, query, k=4):
@@ -566,7 +613,7 @@ def try_load_faiss_store(path: str, embeddings_obj=None):
                             out.append(Doc(page, meta))
                         return out
                     except Exception:
-                        logging.getLogger('backend').exception('FaissAdapter search failed')
+                        app_logger().exception('FaissAdapter search failed')
                         return []
 
                 def similarity_search_by_vector(self, vec, k=4):
@@ -577,7 +624,7 @@ def try_load_faiss_store(path: str, embeddings_obj=None):
                         out = []
                         for idx_i in I[0]:
                             if idx_i < 0: continue
-                            meta = metas[idx_i] if idx_i < len(metas) else {}
+                            meta = self.metas[idx_i] if idx_i < len(self.metas) else {}
                             class Doc:
                                 def __init__(self, page_content, metadata):
                                     self.page_content = page_content
@@ -586,7 +633,7 @@ def try_load_faiss_store(path: str, embeddings_obj=None):
                             out.append(Doc(page, meta))
                         return out
                     except Exception:
-                        logging.getLogger('backend').exception('FaissAdapter vector search failed')
+                        app_logger().exception('FaissAdapter vector search failed')
                         return []
 
             # Determine embedding function: prefer embeddings_obj.embed_query/embed_documents if present; else SentenceTransformer
@@ -604,12 +651,15 @@ def try_load_faiss_store(path: str, embeddings_obj=None):
                     st = SentenceTransformer(os.getenv('LOCAL_EMBED_MODEL','all-MiniLM-L6-v2'))
                     embed_fn = lambda texts: st.encode(texts, convert_to_numpy=True)
                 else:
-                    logging.getLogger('backend').warning("No embedding function available to use with native FAISS adapter.")
+                    app_logger().warning("No embedding function available to use with native FAISS adapter.")
                     return None
             return FaissAdapter(idx, metas, embed_fn)
     except Exception:
-        logging.getLogger('backend').exception('Failed to load native FAISS store')
+        app_logger().exception('Failed to load native FAISS store')
         return None
+
+    return None
+
 
 # -----------------------
 # Initialize models, LLM, embeddings, prompts, vector DB
@@ -635,21 +685,78 @@ def initialize_app():
             embeddings = None
 
         os.makedirs(VECTOR_STORE_PATH_MAIN, exist_ok=True)
+
+        # Prefer Chroma if available and it appears to contain data; otherwise fall back to FAISS loader.
+        db_main = None
         if Chroma is not None and embeddings is not None:
             try:
-                db_main = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
+                app_logger().info("Attempting to open Chroma vectorstore at: %s", VECTOR_STORE_PATH_MAIN)
+                chroma_store = None
+                try:
+                    chroma_store = Chroma(persist_directory=VECTOR_STORE_PATH_MAIN, embedding_function=embeddings)
+                except Exception as e_ch:
+                    app_logger().warning("Failed to instantiate Chroma store: %s", e_ch)
+                    chroma_store = None
+
+                # If we created a chroma_store, do a small probe to ensure it actually has documents.
+                got_any = False
+                if chroma_store is not None:
+                    try:
+                        # Best-effort probe: try similarity_search("test") if available.
+                        if hasattr(chroma_store, "similarity_search"):
+                            probe = None
+                            try:
+                                probe = chroma_store.similarity_search("test", k=1)
+                                got_any = bool(probe)
+                            except Exception:
+                                # Some Chroma wrappers raise on unknown queries; mark as unknown and continue
+                                got_any = False
+                        else:
+                            # If store has a method to list collections/ids, try that (best-effort)
+                            if hasattr(chroma_store, "get"):
+                                got_any = True
+                            else:
+                                # Unknown store shape — assume it may have data to avoid false negative
+                                got_any = True
+                    except Exception as probe_exc:
+                        app_logger().warning("Chroma probe failed: %s", probe_exc)
+                        got_any = False
+
+                if got_any:
+                    db_main = chroma_store
+                    app_logger().info("Chroma vectorstore opened and appears to contain data — using Chroma.")
+                else:
+                    # Chroma opened but looked empty (or probe failed). Close/ignore and try FAISS fallback.
+                    try:
+                        # attempt to cleanup chroma store if it has a close method
+                        if chroma_store is not None and hasattr(chroma_store, "persist"):
+                            try:
+                                chroma_store.persist()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    app_logger().warning("Chroma store appears empty or probe failed — falling back to FAISS loader.")
+                    faiss_store = try_load_faiss_store(VECTOR_STORE_PATH_MAIN, embeddings_obj=embeddings)
+                    if faiss_store is not None:
+                        db_main = faiss_store
+                        app_logger().info("FAISS store loaded into db_main (fallback).")
+                    else:
+                        db_main = None
+                        app_logger().warning("FAISS fallback did not find a usable store.")
             except Exception:
-                logger.exception("Failed to open/create main Chroma vectorstore")
+                app_logger().exception("Unexpected error initializing Chroma/FAISS fallback.")
                 db_main = None
         else:
-            # FAISS fallback attempt (non-intrusive)
-            logger.info("Chroma not available or embeddings missing; attempting FAISS load as fallback")
+            # Chroma or embeddings not available — try FAISS load directly
+            app_logger().info("Chroma not available or embeddings missing; attempting FAISS load as fallback")
             faiss_store = try_load_faiss_store(VECTOR_STORE_PATH_MAIN, embeddings_obj=embeddings)
             if faiss_store is not None:
                 db_main = faiss_store
-                logger.info("FAISS store loaded into db_main")
+                app_logger().info("FAISS store loaded into db_main (direct).")
             else:
                 db_main = None
+                app_logger().warning("No vectorstore found (Chroma unavailable and FAISS fallback failed).")
 
         scam_data = safe_load_json(os.path.join(DATA_PATH, 'scam_examples.json'))
         myth_data = safe_load_json(os.path.join(DATA_PATH, 'myths.json'))
@@ -1465,6 +1572,7 @@ def simple_rule_extract(text):
     if 'promoter' in lower: res['promoter_mentioned'] = True
     return res
 
+
 def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
                           sebi_score=None, sebi_checks=None, llm_score=None,
                           heuristic_meta=None, checklist=None, overall_score=None):
@@ -1483,7 +1591,8 @@ def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
             sebi_checks=(sebi_checks if sebi_checks is not None else None),
             llm_score=(int(llm_score) if llm_score is not None else None)
         )
-        db.session.add(rpt); db.session.commit()
+        db.session.add(rpt)
+        db.session.commit()
         return rpt.id
     except Exception:
         db.session.rollback()
@@ -1523,6 +1632,7 @@ def ipo_analyze():
             text = request.form.get('content')[:150000]
         elif request.json and request.json.get('content'):
             text = request.json.get('content')[:150000]
+
         if not text or not text.strip():
             return jsonify({'error': 'No IPO content provided.'}), 400
 
@@ -1541,7 +1651,8 @@ def ipo_analyze():
         for key, label in IPO_CHECKLIST:
             kws = SEBI_KEYWORDS.get(key, []); found=False; reason=""
             for kw in kws:
-                if kw in lower: found=True; reason=f"Found keyword '{kw}'"; break
+                if kw in lower:
+                    found=True; reason=f"Found keyword '{kw}'"; break
             status = "Verified" if found else "Missing"
             per_check[key] = {"label": label, "status": status, "notes": reason}
             if found: total_score += WEIGHTS.get(key, 0)
@@ -1566,7 +1677,8 @@ def ipo_analyze():
             for _, label in IPO_CHECKLIST: prompt.append(f"- {label}")
             prompt.append("\nPROSPECTUS EXCERPT:\n"); prompt.append(excerpt)
             formatted_prompt = "\n".join(prompt)
-            result = llm.invoke(formatted_prompt); report_md = getattr(result, 'content', str(result))
+            result = llm.invoke(formatted_prompt)
+            report_md = getattr(result, 'content', str(result))
         except Exception as e:
             logger.exception("LLM-based IPO analysis failed; using heuristic fallback: %s", e)
             parts = []
@@ -1842,11 +1954,8 @@ def auth_register():
         if User.query.filter_by(username=username).first():
             return jsonify({"error": "Username already taken"}), 400
 
-        user = User(username=username, email=email)
-        user.set_password(password)
-
-        db.session.add(user)
-        db.session.commit()
+        user = User(username=username, email=email); user.set_password(password)
+        db.session.add(user); db.session.commit()
         login_user(user)
 
         return jsonify({"success": True, "username": user.username, "user_id": user.id})
@@ -1885,7 +1994,6 @@ def auth_logout():
 def auth_whoami():
     if current_user and getattr(current_user, "is_authenticated", False):
         return jsonify({'user_id': current_user.id, 'username': current_user.username})
-    # if session contains user_id but user not loaded, attempt to provide
     uid = session.get('user_id')
     if uid:
         u = db.session.get(User, int(uid))
@@ -1938,5 +2046,4 @@ if __name__ == '__main__':
         logger.info("Initialization complete.")
     port = int(os.getenv("PORT", 5001))
     logger.info("Starting Flask server on http://0.0.0.0:%s ...", port)
-    # debug True during development; set to False in production
     app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
