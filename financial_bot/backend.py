@@ -32,6 +32,7 @@ from flask import (
     Flask, request, jsonify, render_template, send_from_directory, session, Response, url_for, send_file, redirect
 )
 from flask_cors import CORS
+from flask_login import current_user
 
 # Auth / DB
 from flask_sqlalchemy import SQLAlchemy
@@ -111,6 +112,44 @@ def derive_title_from_text(text: str) -> str:
         if l and not l.lower().startswith(("please scan", "qr code", "table of contents")):
             return l[:180]
     return "IPO Report"
+
+def summarize_with_llm(text: str, facts: dict, checks: dict):
+    """
+    Use LLM to summarize DRHP into a short report.
+    """
+    if not text.strip():
+        return "No text to summarize."
+
+    if not llm:
+        return "LLM not available (using fallback)."
+
+    prompt = f"""
+    You are an analyst. Summarize the following IPO draft prospectus into:
+    1. Company Overview
+    2. Key Financial Highlights
+    3. SEBI Compliance / Governance Issues
+    4. Risks for Investors
+
+    Facts extracted:
+    - Revenue: {facts.get('revenue')}
+    - Profit: {facts.get('profit')}
+    - Debt: {facts.get('debt')}
+    - Promoter mentioned: {facts.get('promoter_mentioned')}
+
+    Heuristic checks:
+    {json.dumps(checks, indent=2)}
+
+    Document excerpt (truncated):
+    {text[:8000]}  # limit to ~8k chars so prompt isn’t huge
+    """
+
+    try:
+        res = llm.invoke(prompt)
+        return res.content if hasattr(res, "content") else str(res)
+    except Exception as e:
+        app_logger().exception("LLM summarization failed")
+        return f"LLM summarization failed: {e}"
+
 
 def compute_ipo_score(text: str) -> int:
     t = text.lower()
@@ -429,54 +468,6 @@ LOCAL_EMBED_MODEL = os.getenv("LOCAL_EMBED_MODEL", "all-MiniLM-L6-v2")
 EMBED_CACHE_SIZE = int(os.getenv("EMBED_CACHE_SIZE", "1024"))
 EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "4"))
 EMBED_BACKOFF_BASE = float(os.getenv("EMBED_BACKOFF_BASE", "1.0"))
-
-# --- Models ---
-# class User(UserMixin, db.Model):
-#     __tablename__ = "users"
-#     id = db.Column(db.Integer, primary_key=True)
-#     username = db.Column(db.String(120), unique=True, nullable=False)
-#     email = db.Column(db.String(255), unique=True, nullable=True)
-#     password_hash = db.Column(db.String(255), nullable=False)
-#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-#     portfolios = db.relationship("Portfolio", back_populates="user", cascade="all, delete-orphan")
-#     def set_password(self, password): self.password_hash = generate_password_hash(password)
-#     def check_password(self, password): return check_password_hash(self.password_hash, password)
-
-# class Portfolio(db.Model):
-#     __tablename__ = "portfolios"
-#     id = db.Column(db.Integer, primary_key=True)
-#     name = db.Column(db.String(200), default="My Portfolio")
-#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-#     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-#     user = db.relationship("User", back_populates="portfolios")
-#     holdings = db.relationship("Holding", back_populates="portfolio", cascade="all, delete-orphan")
-
-# class Holding(db.Model):
-#     __tablename__ = "holdings"
-#     id = db.Column(db.Integer, primary_key=True)
-#     symbol = db.Column(db.String(32), nullable=False, index=True)
-#     quantity = db.Column(db.Float, nullable=False, default=0.0)
-#     avg_price = db.Column(db.Float, nullable=True)
-#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-#     portfolio_id = db.Column(db.Integer, db.ForeignKey("portfolios.id"), nullable=False)
-#     portfolio = db.relationship("Portfolio", back_populates="holdings")
-
-# class IPOReport(db.Model):
-#     __tablename__ = "ipo_reports"
-#     id = db.Column(db.Integer, primary_key=True)
-#     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-#     title = db.Column(db.String(512))
-#     filename = db.Column(db.String(512), nullable=True)
-#     content_md = db.Column(db.Text)
-#     raw_text = db.Column(db.Text)
-#     excerpt = db.Column(db.String(512), nullable=True)
-#     heuristic_meta = db.Column(db.Text, nullable=True)
-#     checklist = db.Column(db.Text, nullable=True)
-#     overall_score = db.Column(db.Float, nullable=True)
-#     sebi_score = db.Column(db.Float, nullable=True)
-#     sebi_checks = db.Column(db.JSON, nullable=True)
-#     llm_score = db.Column(db.Integer, nullable=True)
-#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # --- Flask-Login user loader ---
 @login_manager.user_loader
@@ -999,167 +990,526 @@ def ask():
     except Exception:
         logger.exception("--- AN ERROR OCCURRED IN /ask ---")
         return jsonify({'error': 'A server error occurred.'}), 500
+    
+# Add this near your other /ask endpoints in backend.py
 
+# backend.py (add near your other /ask routes)
+
+# Add near your other /ask endpoints
+
+# backend: add or replace this route in your Flask app
+
+# backend_endpoints.py
+
+import os, time, traceback
+from flask import request, jsonify, session
+from flask_login import login_required, current_user
+from werkzeug.utils import secure_filename
+
+# langchain loaders
+try:
+    from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    PyPDFLoader = DirectoryLoader = RecursiveCharacterTextSplitter = None
+
+# global paths
+USER_DATA_PATH = os.getenv("USER_DATA_PATH", "./user_data")
+ALLOWED_USER_DOC_EXTS = {".pdf", ".txt"}
+
+# embeddings wrapper (replace with your embedder)
+try:
+    from sentence_transformers import SentenceTransformer
+    _embed_model = SentenceTransformer(os.getenv("LOCAL_EMBED_MODEL", "all-MiniLM-L6-v2"))
+    class _EmbWrap:
+        def embed_documents(self, texts):
+            return _embed_model.encode(texts, convert_to_numpy=True).tolist()
+    emb = _EmbWrap()
+except Exception:
+    emb = None
+
+
+# ------------------------------------------------------------------
+# /ask_user
+# ------------------------------------------------------------------
+# Add required imports near top of your file if not already present:
+# import os, time, shutil, traceback
+# from flask import request, jsonify, session
+# from werkzeug.utils import secure_filename
+# Ensure you already have: PyPDFLoader, DirectoryLoader, RecursiveCharacterTextSplitter, embeddings (or local_embed_list)
+# and app_logger(), USER_DATA_PATH, ALLOWED_USER_DOC_EXTS defined in your module.
+
+# ---------------------------
+# /ask_user
+# ---------------------------
+@app.route('/ask_user', methods=['POST'])
+@login_required
+def ask_user():
+    payload = request.get_json() or {}
+    question = (payload.get('question') or "").strip()
+    if not question:
+        return jsonify({'error': 'Missing question'}), 400
+
+    try:
+        user_id = current_user.id
+    except Exception:
+        user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'not authenticated'}), 401
+
+    user_vector_dir = os.path.join(USER_DATA_PATH, str(user_id), "user_vector_store")
+    user_collection_name = "user_docs"
+
+    # quick: no vector store -> return friendly message
+    if not os.path.exists(user_vector_dir):
+        ctx_preview = "No relevant information was found in your library."
+        return jsonify({
+            'answer': "No relevant information was found in your library.",
+            'context_preview': ctx_preview,
+            'debug': {'reason': 'no_store'}
+        })
+
+    # Query vector store via chromadb (new client)
+    top_k = int(payload.get('top_k', 3))
+    snippets = []
+    try:
+        import chromadb
+        from chromadb.config import Settings
+
+        # Create client pointing to user's vector dir
+        client = chromadb.Client(Settings(persist_directory=user_vector_dir))
+
+        # Get collection; if missing, return no-store message
+        try:
+            collection = client.get_collection(user_collection_name)
+        except Exception:
+            collection = None
+
+        if not collection:
+            ctx_preview = "No relevant information was found in your library."
+            return jsonify({'answer': ctx_preview, 'context_preview': ctx_preview, 'debug': {'reason': 'collection-not-found'}})
+
+        # Create query embedding using your embedding wrapper object `emb`
+        # emb must have embed_documents(list[str]) -> list[vectors]
+        q_embs = None
+        try:
+            q_embs = emb.embed_documents([question])
+            if not (isinstance(q_embs, list) and len(q_embs) == 1):
+                raise RuntimeError("embed_documents did not return a single vector")
+            q_emb = q_embs[0]
+        except Exception as ex:
+            app_logger().exception("Embedding for query failed")
+            ctx_preview = "No relevant information was found in your library."
+            return jsonify({'answer': ctx_preview, 'context_preview': ctx_preview, 'debug': {'embed_error': str(ex)}})
+
+        # Query the collection using query_embeddings (new API)
+        try:
+            query_res = collection.query(
+                query_embeddings=[q_emb],
+                n_results=top_k,
+                include=['documents', 'metadatas', 'distances']
+            )
+        except Exception as ex:
+            app_logger().exception("Collection query failed")
+            ctx_preview = "No relevant information was found in your library."
+            return jsonify({'answer': ctx_preview, 'context_preview': ctx_preview, 'debug': {'query_error': str(ex)}})
+
+        # Parse results - chromadb returns lists-of-lists
+        docs_lists = query_res.get('documents', [[]])[0] if isinstance(query_res.get('documents'), list) else []
+        dists = query_res.get('distances', [[]])[0] if isinstance(query_res.get('distances'), list) else []
+        metas_lists = query_res.get('metadatas', [[]])[0] if isinstance(query_res.get('metadatas'), list) else []
+
+        for i, doc_txt in enumerate(docs_lists):
+            dist = dists[i] if i < len(dists) else None
+            meta = metas_lists[i] if i < len(metas_lists) else {}
+            preview = (doc_txt or "")[:1200]  # limit length
+            if dist is None:
+                snippets.append(f"{preview}")
+            else:
+                snippets.append(f"({dist:.4f}) {preview} — source: {meta.get('source') or meta.get('file') or 'unknown'}")
+
+    except Exception as ex:
+        app_logger().exception("ask_user vector query failed")
+        ctx_preview = "No relevant information was found in your library."
+        return jsonify({'answer': ctx_preview, 'context_preview': ctx_preview, 'debug': {'exception': str(ex), 'trace': traceback.format_exc()}})
+
+    # Prepare context preview to show to user
+    if not snippets:
+        ctx_preview = "No relevant information was found in your library."
+    else:
+        ctx_preview = "\n\n---\n\n".join(snippets)
+
+    # DEBUG: Always show snippets
+    app_logger().info("Retrieved snippets: %s", ctx_preview)
+
+
+    # Minimal behaviour: return number of snippets and preview.
+    # You can replace the following with an LLM call that synthesizes an answer using `snippets`.
+    answer = f"I found {len(snippets)} snippet(s) in your library. Ask again to synthesize an answer using retrieved context."
+
+    return jsonify({'answer': answer, 'context_preview': ctx_preview, 'debug': {'snippets_returned': len(snippets)}})
+
+
+# ---------------------------
+# /upload_and_ingest
+# ---------------------------
 @app.route('/upload_and_ingest', methods=['POST'])
 @login_required
 def upload_and_ingest():
+    """
+    Save uploaded PDF, split into chunks, embed and add to a chromadb collection.
+    Uses the new chromadb.Client API (no client.persist()).
+    Falls back to a fresh `_v2` directory if the existing store triggers legacy errors.
+    """
     file = request.files.get('userFile')
     try:
         user_id = current_user.id
     except Exception:
         user_id = session.get('user_id')
-
-    if not all([file, user_id]):
+    if not file or not user_id:
         return jsonify({'error': 'Missing file or user session'}), 400
 
     user_id_str = str(user_id)
     user_docs_path = os.path.join(USER_DATA_PATH, user_id_str, "docs")
-    user_vector_base = os.path.join(USER_DATA_PATH, user_id_str, "vector_store")
+    user_vector_dir = os.path.join(USER_DATA_PATH, user_id_str, "user_vector_store")
     os.makedirs(user_docs_path, exist_ok=True)
 
-    # Save uploaded file
+    # 1) save file
     filename = secure_filename(file.filename) or f"uploaded_{int(time.time())}.pdf"
     file_path = os.path.join(user_docs_path, filename)
     try:
         file.save(file_path)
-    except Exception as e:
-        logger.exception("Failed to save uploaded file")
-        return jsonify({'error': f'Failed to save file: {e}'}), 500
+    except Exception as ex:
+        app_logger().exception("Failed to save uploaded file")
+        return jsonify({'error': f'Could not save file: {ex}'}), 500
+    app_logger().info("Saved uploaded file to %s", file_path)
 
-    # Load and split PDFs
+    # 2) load PDFs -> langchain Documents
     try:
-        if DirectoryLoader is None or PyPDFLoader is None:
-            raise RuntimeError("PDF loader not available on server.")
+        if PyPDFLoader is None or DirectoryLoader is None:
+            raise RuntimeError("PDF loader is not available in environment")
         loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
         documents = loader.load()
-    except Exception:
-        logger.exception("Failed to load PDFs from user docs")
-        return jsonify({'error': 'Failed to read uploaded PDF(s).'}), 500
+    except Exception as ex:
+        app_logger().exception("PDF loader failed")
+        return jsonify({'error': f'Failed to read PDF(s): {ex}'}), 500
 
     if not documents:
-        return jsonify({'error': 'No PDFs found in uploaded docs.'}), 400
+        return jsonify({'error': 'No text extracted from the uploaded PDF(s).'}), 400
 
-    # Split into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150) if RecursiveCharacterTextSplitter is not None else None
+    # 3) split into chunks
     try:
-        if text_splitter is not None:
+        if RecursiveCharacterTextSplitter:
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
             chunks = text_splitter.split_documents(documents)
         else:
-            # naive fallback
-            chunks = documents
-    except Exception:
-        logger.exception("Text splitter failed - trying simpler split")
-        # fallback: build minimal chunks from page_content
-        chunks = []
-        for d in documents:
-            text = getattr(d, "page_content", "") or ""
-            if text.strip():
-                class SimpleDoc:
-                    def __init__(self, page_content): self.page_content = page_content
-                chunks.append(SimpleDoc(text))
+            chunks = [d for d in documents if getattr(d, "page_content", "").strip()]
+    except Exception as ex:
+        app_logger().exception("Text splitting failed")
+        return jsonify({'error': f'Text splitting failed: {ex}'}), 500
 
-    # Filter out empty chunks
     chunks = [c for c in chunks if getattr(c, "page_content", "").strip()]
+    app_logger().info("Chunks to embed: %s", len(chunks))
     if not chunks:
-        return jsonify({'error': 'No text extracted from the uploaded PDFs.'}), 400
+        return jsonify({'error': 'No chunks to embed.'}), 400
 
-    # Prepare new vector store directory (versioned)
-    new_vector_store = f"{user_vector_base}_v{int(time.time())}"
-    os.makedirs(new_vector_store, exist_ok=True)
+    # 4) prepare embedding wrapper `emb`
+    if embeddings is not None:
+        emb_local = embeddings
+        if callable(emb_local) and not hasattr(emb_local, "embed_documents"):
+            class _Wrap:
+                def embed_documents(self, texts): return [emb_local(t) for t in texts]
+            emb_local = _Wrap()
+    else:
+        class _LocalEmb:
+            def embed_documents(self, texts): return [local_embed_list(t) for t in texts]
+        emb_local = _LocalEmb()
 
-    # Helper: local fallback embedding wrapper
-    class LocalEmbedWrapper:
-        def embed_documents(self, texts):
-            return [local_embed_list(t) for t in texts]
-        def embed_query(self, text):
-            return local_embed_list(text)
-
-    # Try to build vectorstore using main `embeddings`, fall back to local embedder.
+    # 4a) embed sanity check
     try:
-        if Chroma is None:
-            raise RuntimeError("Chroma library not available on server.")
-        if embeddings is None or not hasattr(embeddings, "embed_documents"):
-            raise RuntimeError("Configured embeddings not available")
+        test_vecs = emb_local.embed_documents(["hello world"])
+        if not isinstance(test_vecs, list) or not isinstance(test_vecs[0], (list, tuple)):
+            raise RuntimeError("embed_documents must return list-of-vectors")
+        app_logger().info("Embed test OK – dim=%s", len(test_vecs[0]))
+    except Exception as ex:
+        app_logger().exception("Embed function broken")
+        return jsonify({'error': f'Embed test failed: {ex}'}), 500
 
-        sample_texts = [chunks[0].page_content[:500]]
-        sample_vecs = embeddings.embed_documents(sample_texts)
-        if not sample_vecs or not isinstance(sample_vecs[0], (list, tuple)):
-            raise RuntimeError("Embeddings returned empty or invalid vectors on sample")
+    # 5) attempt to create / open chromadb client and add documents
+    collection_name = "user_docs"
+    added_total = 0
+    used_vector_dir = user_vector_dir
+    try:
+        import chromadb
+        from chromadb.config import Settings
 
-        Chroma.from_documents(chunks, embedding_function=embeddings, persist_directory=new_vector_store)
-        used_vector_store = new_vector_store
-    except Exception as primary_exc:
-        logger.warning("Primary embeddings failed: %s. Falling back to local embedder.", repr(primary_exc))
+        def _create_client(persist_dir):
+            return chromadb.Client(Settings(persist_directory=persist_dir))
+
+        # first try original path, but if ValueError (legacy config) occurs, fallback to _v2
         try:
-            if SentenceTransformer is None:
-                raise RuntimeError("Local SentenceTransformer not available (install sentence-transformers)")
+            client = _create_client(used_vector_dir)
+        except ValueError as ve:
+            app_logger().warning("Chroma client init failed (legacy store?) - falling back to new directory: %s", str(ve))
+            used_vector_dir = user_vector_dir + "_v2"
+            os.makedirs(used_vector_dir, exist_ok=True)
+            client = _create_client(used_vector_dir)
 
-            local_wrapper = LocalEmbedWrapper()
-            Chroma.from_documents(chunks, embedding_function=local_wrapper, persist_directory=new_vector_store)
-            used_vector_store = new_vector_store
-            logger.info("Built user vector store using local SentenceTransformer fallback: %s", new_vector_store)
-        except Exception as fallback_exc:
-            logger.exception("Both primary and local fallback embedding attempts failed")
-            try:
-                if os.path.exists(new_vector_store):
-                    shutil.rmtree(new_vector_store)
-            except Exception:
-                logger.exception("Failed to cleanup incomplete vector store")
-            return jsonify({'error': 'Failed to create embeddings for the uploaded document(s).'}), 500
+        # get or create collection
+        try:
+            collection = client.get_collection(collection_name)
+        except Exception:
+            collection = client.create_collection(name=collection_name)
 
-    # Success
+        # add chunks in batches
+        batch = 50
+        ts_base = int(time.time() * 1000)
+        for i in range(0, len(chunks), batch):
+            batch_chunks = chunks[i:i+batch]
+            texts = [getattr(c, "page_content", "") for c in batch_chunks]
+            embs = emb_local.embed_documents(texts)
+            if not (isinstance(embs, list) and len(embs) == len(texts)):
+                app_logger().error("Embeddings length mismatch: texts=%s emb=%s", len(texts), len(embs) if isinstance(embs, list) else type(embs))
+                return jsonify({'error': 'Embedding API returned wrong shape'}), 500
+
+            ids = [f"{user_id_str}-{ts_base + i}-{j}" for j in range(len(texts))]
+            metadatas = []
+            for c in batch_chunks:
+                md = getattr(c, "metadata", {}) or {}
+                # prefer an explicit source path in metadata if available
+                src = md.get("source") or md.get("file_path") or filename
+                md.update({"source": src})
+                metadatas.append(md)
+
+            # new Chroma client: collection.add(...) persists automatically to persist_directory
+            collection.add(
+                ids=ids,
+                metadatas=metadatas,
+                documents=texts,
+                embeddings=embs
+            )
+            added_total += len(texts)
+
+        # no client.persist() in new API
+
+    except Exception as ex:
+        app_logger().exception("Chroma/chromadb add_documents failed")
+        return jsonify({'error': f'Embedding/store failed: {ex}', 'trace': traceback.format_exc()}), 500
+
+    # 6) verify count (best-effort)
+    cnt = None
     try:
-        user_lib = sorted(os.listdir(user_docs_path))
+        client2 = chromadb.Client(Settings(persist_directory=used_vector_dir))
+        collection2 = client2.get_collection(collection_name)
+        try:
+            cnt = collection2.count()
+        except Exception:
+            # fallback: try query length
+            try:
+                res = collection2.query(n_results=1, query_texts=["dummy"], include=["ids"])
+                cnt = len(res.get("ids", [[]])[0]) if isinstance(res, dict) else None
+            except Exception:
+                cnt = None
+    except Exception:
+        app_logger().exception("Could not probe vector count")
+
+    app_logger().info("Vector-store contains %s embeddings (added_total=%s) at %s", cnt, added_total, used_vector_dir)
+    if cnt == 0 or cnt is None:
+        app_logger().warning("Zero vectors stored – check chunks/embedding and collection config")
+
+    # 7) return updated library listing
+    try:
+        user_lib = sorted(
+            f for f in os.listdir(user_docs_path)
+            if os.path.isfile(os.path.join(user_docs_path, f)) and
+            os.path.splitext(f)[1].lower() in ALLOWED_USER_DOC_EXTS
+        )
     except Exception:
         user_lib = []
 
-    return jsonify({
-        'success': True,
-        'user_library': user_lib,
-        'vector_store': os.path.basename(used_vector_store)
-    })
+    response = {'success': True, 'user_library': user_lib, 'vectors_added': added_total, 'vector_count': cnt}
+    if used_vector_dir != user_vector_dir:
+        response['note'] = 'Used a fresh vector directory to avoid legacy Chroma migration.'
+        response['vector_dir'] = used_vector_dir
+
+    return jsonify(response)
+
+
 
 @app.route('/delete_user_file', methods=['POST'])
+@login_required
 def delete_user_file():
-    data = request.get_json(force=True, silent=True) or {}
-    filename = data.get('filename')
-    user_id = data.get('user_id', session.get('user_id'))
-    if not all([filename, user_id]): return jsonify({'error': 'Missing filename or user session'}), 400
-    uid_str = str(user_id)
-    user_docs_path = os.path.join(USER_DATA_PATH, uid_str, "docs")
-    user_vector_store_path = os.path.join(USER_DATA_PATH, uid_str, "vector_store")
-    file_to_delete = os.path.join(user_docs_path, filename)
+    """
+    Delete a file from the current user's library (docs folder).
+    Expects JSON body: { "filename": "something.pdf" }
+    Returns updated user_library list.
+    """
     try:
-        if os.path.exists(file_to_delete):
-            os.remove(file_to_delete)
-            if os.path.exists(user_vector_store_path): shutil.rmtree(user_vector_store_path)
-            remaining_files = os.listdir(user_docs_path)
-            if remaining_files:
-                if DirectoryLoader is None or PyPDFLoader is None or RecursiveCharacterTextSplitter is None or embeddings is None or Chroma is None:
-                    # if key pieces missing, skip rebuild
-                    return jsonify({'success': True, 'user_library': remaining_files})
-                loader = DirectoryLoader(user_docs_path, glob="**/*.pdf", loader_cls=PyPDFLoader)
-                documents = loader.load()
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-                texts = text_splitter.split_documents(documents)
-                Chroma.from_documents(texts, embeddings, persist_directory=user_vector_store_path)
-            return jsonify({'success': True, 'user_library': remaining_files})
-        else:
+        data = request.get_json() or {}
+        filename = data.get("filename")
+        if not filename:
+            return jsonify({'error': 'Missing filename'}), 400
+
+        # determine user_id
+        try:
+            user_id = current_user.id
+        except Exception:
+            user_id = session.get('user_id')
+
+        if not user_id:
+            return jsonify({'error': 'Missing user session'}), 401
+
+        user_docs_path = os.path.join(USER_DATA_PATH, str(user_id), "docs")
+        file_path = os.path.join(user_docs_path, filename)
+
+        if not os.path.exists(file_path):
             return jsonify({'error': 'File not found'}), 404
-    except Exception:
-        logger.exception("--- ERROR deleting file ---")
-        return jsonify({'error': 'Failed to delete file.'}), 500
+
+        os.remove(file_path)
+        app_logger().info("Deleted file %s for user %s", filename, user_id)
+
+        # update user library
+        try:
+            files = sorted(os.listdir(user_docs_path))
+        except Exception:
+            files = []
+
+        return jsonify({'success': True, 'user_library': files})
+
+    except Exception as e:
+        logger.exception("Delete user file failed")
+        return jsonify({'error': f'Delete failed: {e}'}), 500
+
+
+ALLOWED_USER_DOC_EXTS = {'.pdf', '.txt', '.csv'}
 
 @app.route('/get_user_library', methods=['GET'])
 def get_user_library():
-    user_id = session.get('user_id')
-    if not user_id: return jsonify({'user_library': []})
-    user_docs_path = os.path.join(USER_DATA_PATH, str(user_id), "docs")
-    if os.path.exists(user_docs_path):
-        try: files = sorted(os.listdir(user_docs_path))
-        except Exception: files = []
+    """
+    Return a JSON list of files in the current user's user_data/<id>/docs directory.
+    Works with Flask-Login current_user or session['user_id'] fallback.
+    """
+    try:
+        # Prefer flask-login current_user if authenticated
+        uid = None
+        try:
+            if current_user and getattr(current_user, "is_authenticated", False):
+                uid = current_user.id
+        except Exception:
+            uid = None
+
+        if uid is None:
+            uid = session.get('user_id')
+
+        if not uid:
+            # Not authenticated — return empty library (frontend expects this)
+            app_logger().debug("get_user_library: no user id in session")
+            return jsonify({'user_library': []})
+
+        user_docs_path = os.path.join(USER_DATA_PATH, str(uid), "docs")
+        if not os.path.isdir(user_docs_path):
+            return jsonify({'user_library': []})
+
+        try:
+            files = sorted([
+                f for f in os.listdir(user_docs_path)
+                if os.path.isfile(os.path.join(user_docs_path, f)) and os.path.splitext(f)[1].lower() in ALLOWED_USER_DOC_EXTS
+            ])
+        except Exception as e:
+            app_logger().exception("Failed to list user library files")
+            files = []
+
         return jsonify({'user_library': files})
-    return jsonify({'user_library': []})
+    except Exception:
+        app_logger().exception("Unhandled error in /get_user_library")
+        return jsonify({'user_library': []}), 500
+# Serve a user's raw uploaded file (PDF/TXT/CSV) from user_data/<user_id>/docs
+@app.route('/user_source_files/<path:filename>', methods=['GET'])
+@login_required
+def serve_user_source_file(filename):
+    """
+    Serve files uploaded by the current user (safe path resolution).
+    URL: /user_source_files/<filename>
+    """
+    try:
+        # decode/normalize
+        fname = unquote(filename or "").strip()
+        if not fname:
+            return jsonify({'error': 'File not found'}), 404
+
+        user_docs_path = os.path.join(USER_DATA_PATH, str(current_user.id), "docs")
+        # safety: resolve absolute and ensure it is inside user's docs
+        candidate = os.path.abspath(os.path.join(user_docs_path, fname))
+        base_abs = os.path.abspath(user_docs_path)
+        if not (candidate == base_abs or candidate.startswith(base_abs + os.sep)):
+            return jsonify({'error': 'File not found'}), 404
+        if not os.path.exists(candidate) or not os.path.isfile(candidate):
+            return jsonify({'error': 'File not found'}), 404
+
+        ext = os.path.splitext(candidate)[1].lower()
+        basename = os.path.basename(candidate)
+        if ext == '.pdf':
+            # serve inline PDF
+            resp = send_from_directory(user_docs_path, basename, as_attachment=False)
+            resp.headers['Content-Disposition'] = f'inline; filename="{basename}"'
+            return resp
+        if ext in ('.txt', '.csv'):
+            with open(candidate, 'r', encoding='utf-8', errors='replace') as fh:
+                text = fh.read()
+            html = f"""
+            <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>{basename}</title>
+            <style>body{{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;padding:1rem}} pre{{white-space:pre-wrap;word-wrap:break-word}}</style>
+            </head><body>
+            <a href="/get_user_library">← Back to library</a>
+            <h3>{basename}</h3>
+            <pre>{text}</pre>
+            </body></html>"""
+            return Response(html, mimetype='text/html')
+        return jsonify({'error': 'Unsupported file type'}), 400
+    except Exception:
+        app_logger().exception("Error serving user source file")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+# Viewer HTML wrapper (iframe) for user docs
+@app.route('/user_source_view/<path:filename>', methods=['GET'])
+@login_required
+def user_source_viewer(filename):
+    try:
+        fname = unquote(filename or '').strip()
+        if not fname: return jsonify({'error': 'File not found'}), 404
+        user_docs_path = os.path.join(USER_DATA_PATH, str(current_user.id), "docs")
+        candidate = os.path.abspath(os.path.join(user_docs_path, fname))
+        base_abs = os.path.abspath(user_docs_path)
+        if not (candidate == base_abs or candidate.startswith(base_abs + os.sep)):
+            return jsonify({'error': 'File not found'}), 404
+        if not os.path.exists(candidate) or not os.path.isfile(candidate): return jsonify({'error': 'File not found'}), 404
+
+        basename = os.path.basename(candidate)
+        file_url = url_for('serve_user_source_file', filename=quote(basename, safe=''), _external=False)
+        viewer_html = f"""
+        <!doctype html>
+        <html>
+          <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>Viewing: {basename}</title>
+            <style>body,html{{height:100%;margin:0}} .topbar{{padding:8px;background:#f3f4f6;border-bottom:1px solid #e5e7eb}} .iframe-wrap{{height:calc(100vh - 52px)}}</style>
+          </head>
+          <body>
+            <div class="topbar">
+              <a href="/get_user_library" style="margin-right:12px">← Back to my library</a>
+              <strong>{basename}</strong>
+              <a style="float:right" href="{file_url}" target="_blank" rel="noopener">Open raw</a>
+            </div>
+            <div class="iframe-wrap"><iframe src="{file_url}" style="width:100%;height:100%;border:0;"></iframe></div>
+          </body>
+        </html>
+        """
+        return Response(viewer_html, mimetype='text/html')
+    except Exception:
+        app_logger().exception("Error building user source viewer")
+        return jsonify({'error': 'Internal server error'}), 500
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -1624,6 +1974,113 @@ def simple_rule_extract(text):
     if m3: res['debt'] = m3.group(2).strip()
     if 'promoter' in lower: res['promoter_mentioned'] = True
     return res
+# -----------------------
+# SEBI-checks analyzer & scoring
+# -----------------------
+
+# helper to parse numeric amounts (re-uses FIN_NUM regex)
+def _parse_fin_number(text):
+    if not text: return None
+    try:
+        m = FIN_NUM.search(text)
+        if not m:
+            s = re.sub(r'[^\d\.]', '', text)
+            return float(s) if s else None
+        num_part = m.group(2) or m.group(0)
+        s = re.sub(r'[^\d\.]', '', num_part)
+        if not s: return None
+        val = float(s)
+        unit = (m.group(3) or "").lower() if m.lastindex and m.lastindex >= 3 else ""
+        if unit:
+            if "lakh" in unit: val *= 1e5
+            if "crore" in unit or unit == "cr": val *= 1e7
+            if "mn" in unit or "million" in unit: val *= 1e6
+            if "bn" in unit or "billion" in unit: val *= 1e9
+        return val
+    except Exception:
+        return None
+
+def analyze_sebi_checks(text: str, facts: dict = None):
+    """
+    Heuristic SEBI checks. Returns a dict of checks/flags and some values.
+    """
+    t = (text or "").lower()
+    facts = facts or {}
+    checks = {}
+
+    # Financials
+    rev = facts.get("revenue") if isinstance(facts, dict) else None
+    prof = facts.get("profit") if isinstance(facts, dict) else None
+    rev_val = _parse_fin_number(rev) if rev else None
+    prof_val = _parse_fin_number(prof) if prof else None
+    checks["financials_present"] = bool(rev or prof)
+    checks["revenue_value"] = rev or None
+    checks["profit_value"] = prof or None
+    checks["profitability"] = bool(prof_val and prof_val > 0)
+
+    # Governance / promoter checks
+    checks["promoter_mentioned"] = bool(re.search(r'\bpromoter(s)?\b', t))
+    checks["promoter_pledge"] = bool(re.search(r'\bpledg(ed|e)?\b', t))
+    checks["related_party"] = bool(re.search(r'related[\s-]*party', t))
+
+    # Auditor opinions
+    checks["qualified_opinion"] = bool(re.search(r'qualified opinion|qualified audit opinion', t))
+    checks["material_uncertainty"] = bool(re.search(r'material uncertainty|going concern', t))
+
+    # Debt & leverage
+    checks["debt_mentioned"] = bool(re.search(r'\b(debt|borrowings|loans|interest bearing)\b', t))
+    debt_hint = facts.get("debt")
+    if not debt_hint:
+        m = re.search(r'(debt|borrowings)[^\d]{0,8}([\d,\.]+\s*(?:crore|cr|₹|rs|m|bn|b|million|billion)?)', text, re.I)
+        if m:
+            debt_hint = m.group(2)
+    checks["debt_value"] = debt_hint or None
+    debt_val = _parse_fin_number(str(debt_hint)) if debt_hint else None
+    checks["debt_high"] = bool(debt_val and debt_val > 5e8)  # heuristic >50 crore
+
+    # Use-of-proceeds clarity
+    checks["use_of_proceeds_clear"] = bool(re.search(r'use of proceeds|purpose of the issue|utiliz(e|ation) of proceeds', t))
+    checks["use_of_proceeds_vague"] = bool(re.search(r'general corporate purposes|general corporate use', t))
+
+    # Litigation / regulatory exposure
+    checks["litigation_mentioned"] = bool(re.search(r'\b(litigat|court|lawsuit|legal\s+proceeding|penalty|regulator|show cause)\b', t))
+
+    # Revenue trend signals
+    checks["revenue_growth_words"] = bool(re.search(r'\b(grow|increase|expan|year on year|yoy|y/y|rise|surge)\b', t))
+    checks["revenue_decline_words"] = bool(re.search(r'\b(declin|fall|drop|contract)\b', t))
+
+    # Fraud / material weakness words
+    checks["fraud_terms"] = bool(re.search(r'\b(fraud|scam|insolv|bankrupt|material weakness)\b', t))
+
+    # Lock-in mentions
+    checks["lockin_mentioned"] = bool(re.search(r'lock-in|lockin', t))
+
+    return checks
+
+def compute_ipo_score_from_checks(checks: dict):
+    """
+    Convert checks dict into an integer 0..100 score (heuristic).
+    """
+    score = 50.0
+    if checks.get("financials_present"): score += 10
+    if checks.get("profitability"): score += 8
+    if checks.get("promoter_mentioned"): score += 3
+    if checks.get("promoter_pledge"): score -= 12
+    if checks.get("related_party"): score -= 6
+    if checks.get("qualified_opinion"): score -= 15
+    if checks.get("material_uncertainty"): score -= 10
+    if checks.get("debt_mentioned"): score -= 2
+    if checks.get("debt_high"): score -= 10
+    if checks.get("use_of_proceeds_clear"): score += 6
+    if checks.get("use_of_proceeds_vague"): score -= 6
+    if checks.get("litigation_mentioned"): score -= 8
+    if checks.get("revenue_growth_words"): score += 4
+    if checks.get("revenue_decline_words"): score -= 4
+    if checks.get("fraud_terms"): score -= 20
+    if checks.get("lockin_mentioned"): score += 2
+
+    score = max(0, min(100, score))
+    return int(round(score))
 
 
 def save_ipo_report_to_db(user_id, title, filename, content_md, raw_text,
@@ -1666,160 +2123,255 @@ def list_user_ipo_reports(user_id):
 @app.post("/ipo/analyze")
 @login_required
 def ipo_analyze():
-    text = None
+    """
+    Full IPO analyze endpoint:
+    - Accepts uploaded PDF (form field 'ipoFile') or JSON body { "content": "..." }
+    - Extracts text, runs heuristics, builds SEBI checklist, computes score
+    - Calls LLM for a short human-readable summary (if configured)
+    - Saves report to DB and returns summary + checks
+    """
+    try:
+        text = None
+        filename = None
+        tmp_path = None
 
-    # file upload path
-    if "ipoFile" in request.files and request.files["ipoFile"]:
-        f = request.files["ipoFile"]
-        filename = secure_filename(f.filename or "ipo.pdf")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=pathlib.Path(filename).suffix) as tmp:
-            f.save(tmp.name)
-            path = tmp.name
+        # 1) Get text either from uploaded file or JSON body
+        if "ipoFile" in request.files and request.files["ipoFile"]:
+            f = request.files["ipoFile"]
+            filename = secure_filename(f.filename or "ipo.pdf")
+            # Save to a temp file so we can pass to pdfplumber or loaders
+            with tempfile.NamedTemporaryFile(delete=False, suffix=pathlib.Path(filename).suffix) as tmp:
+                f.save(tmp.name)
+                tmp_path = tmp.name
 
-        if filename.lower().endswith(".pdf"):
-            if not pdfplumber:
-                return jsonify(error="PDF support not installed. pip install pdfplumber"), 400
-            try:
-                pages = []
-                with pdfplumber.open(path) as pdf:
-                    for p in pdf.pages[:40]:
-                        pages.append(p.extract_text() or "")
-                text = "\n".join(pages)
-            finally:
-                try: os.remove(path)
-                except Exception: pass
-        else:
-            text = open(path, "r", errors="ignore", encoding="utf-8").read()
-            try: os.remove(path)
-            except Exception: pass
+            if filename.lower().endswith(".pdf"):
+                if pdfplumber is None:
+                    # Try simple binary read fallback
+                    try:
+                        with open(tmp_path, "rb") as fh:
+                            text = fh.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        # cleanup
+                        try: os.remove(tmp_path)
+                        except Exception: pass
+                        return jsonify({"error": "PDF support not installed (pdfplumber). Install pdfplumber or upload plain text."}), 400
+                else:
+                    try:
+                        pages = []
+                        with pdfplumber.open(tmp_path) as pdf:
+                            for p in pdf.pages[:400]:  # limit pages to avoid huge extraction
+                                pages.append(p.extract_text() or "")
+                        text = "\n".join(pages)
+                    except Exception:
+                        # fallback to raw read
+                        try:
+                            with open(tmp_path, "rb") as fh:
+                                text = fh.read().decode("utf-8", errors="ignore")
+                        except Exception:
+                            text = ""
+                    finally:
+                        try: os.remove(tmp_path)
+                        except Exception: pass
+            else:
+                # non-pdf, read as text
+                try:
+                    with open(tmp_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        text = fh.read()
+                except Exception:
+                    with open(tmp_path, "rb") as fh:
+                        text = fh.read().decode("utf-8", errors="ignore")
+                finally:
+                    try: os.remove(tmp_path)
+                    except Exception: pass
 
-    # pasted text path
-    elif request.is_json:
-        text = (request.json or {}).get("content", "")
+        # If JSON body with content (paste)
+        elif request.is_json:
+            text = (request.json or {}).get("content", "")
 
-    if not text or not text.strip():
-        return jsonify(error="No IPO content found."), 400
+        if not text or not text.strip():
+            return jsonify({"error": "No IPO content found."}), 400
 
-    title = derive_title_from_text(text)
-    score = compute_ipo_score(text)
-    facts = extract_quick_facts(text)
+        # Truncate for internal processing but keep raw_text for DB small enough
+        raw_text = text[:200_000]
 
-    md = (
-        f"# {title}\n\n**Heuristic Score:** {score}/100\n\n"
-        f"**Revenue:** {facts['revenue'] or '—'}  \n"
-        f"**Profit:** {facts['profit'] or '—'}  \n"
-        f"**Debt:** {facts['debt'] or '—'}  \n"
-        f"**Promoter Mentioned:** {'Yes' if facts['promoter_mentioned'] else 'No'}\n\n"
-        f"---\n\n## Extracted Text (truncated)\n\n" + (text[:100_000])
-    )
+        # 2) Title, quick facts, heuristics, score
+        title = derive_title_from_text(text) or "IPO Report"
+        quick_facts = extract_quick_facts(text)
+        simple_meta = simple_rule_extract(text)
+        sebi_score = compute_ipo_score(text)
 
-    r = IpoReport(
-        user_id=current_user.id,
-        title=title,
-        content_md=md,
-        raw_text=text[:200_000],
-        sebi_score=score,
-        revenue=facts["revenue"],
-        profit=facts["profit"],
-        debt=facts["debt"],
-        promoter_mentioned=facts["promoter_mentioned"],
-    )
-    db.session.add(r)
-    db.session.commit()
+        # 3) Build more detailed SEBI checks (heuristic rules)
+        lower = text.lower()
+        def contains_any(words):
+            return any(w in lower for w in words)
 
-    return jsonify({
-        "report_id": r.id,
-        "ipo_report_md": md,
-        "title": title,
-        "sebi_score": score,
-    })
-    
-@app.get("/ipo/list")
+        checks = {
+            "financials_present": bool(quick_facts.get("revenue") or quick_facts.get("profit") or simple_meta.get("revenue")),
+            "revenue_value": quick_facts.get("revenue") or simple_meta.get("revenue"),
+            "profit_value": quick_facts.get("profit") or simple_meta.get("profit"),
+            "profitability": bool((quick_facts.get("profit") or simple_meta.get("profit")) and not contains_any(["loss", "losses", "negative"])),
+            "promoter_mentioned": bool("promoter" in lower or "promoters" in lower),
+            "promoter_pledge": bool("pledge" in lower or "pledged" in lower),
+            "related_party": bool("related party" in lower or "related-party" in lower),
+            "qualified_opinion": bool("qualified opinion" in lower or "qualified report" in lower),
+            "material_uncertainty": bool("material uncertainty" in lower),
+            "debt_mentioned": bool("debt" in lower or "borrowings" in lower or "total borrowings" in lower),
+            "debt_value": quick_facts.get("debt") or simple_meta.get("debt"),
+            "debt_high": False,  # heuristic: could be set based on parsed numeric debt vs revenue (advanced)
+            "useofproceeds_clear": not bool(contains_any(["general corporate purposes", "general corporate", "working capital"])) and "use of proceeds" in lower,
+            "useofproceeds_vague": bool("general corporate purposes" in lower or "general corporate" in lower or ("use of proceeds" in lower and contains_any(["general","unspecified"]))),
+            "litigation_mentioned": bool("litigation" in lower or "suit" in lower or "case" in lower or "claim" in lower),
+            "revenuegrowthwords": contains_any(["growth", "growing", "increase in revenue", "y-o-y", "year on year"]),
+            "revenuedeclinewords": contains_any(["decline", "decrease", "drop in revenue", "de-growth", "revenue declined"]),
+            "fraud_terms": contains_any(["fraud", "forgery", "embezzlement", "scam"]),
+            "lockin_mentioned": bool("lock-in" in lower or "lock in" in lower or "lockin" in lower),
+        }
+
+        # Simple derived flag for debt_high (very naive): if debt mentions and no revenue found -> mark high
+        try:
+            if checks["debt_mentioned"] and not checks["financials_present"]:
+                checks["debt_high"] = True
+            else:
+                checks["debt_high"] = False
+        except Exception:
+            checks["debt_high"] = False
+
+        # 4) Build markdown report skeleton (we will include LLM summary if available)
+        md_header = f"# {title}\n\n**SEBI Heuristic Score:** {sebi_score}/100\n\n"
+        md_quick = (
+            f"**Revenue:** {quick_facts.get('revenue') or simple_meta.get('revenue') or '—'}  \n"
+            f"**Profit:** {quick_facts.get('profit') or simple_meta.get('profit') or '—'}  \n"
+            f"**Debt:** {quick_facts.get('debt') or simple_meta.get('debt') or '—'}  \n"
+            f"**Promoter Mentioned:** {'Yes' if checks.get('promoter_mentioned') else 'No'}\n\n"
+            f"---\n\n"
+        )
+
+        # 5) LLM summary (short). Use limited excerpt to keep prompt size manageable
+        llm_summary = None
+        try:
+            if llm is not None:
+                # Prepare compact prompt
+                prompt_parts = [
+                    "You are SEBI Saathi, an analyst. Produce a concise IPO summary (about 6-10 bullet points) and a one-sentence recommendation-style summary (NOT investment advice). Base statements only on the text given.",
+                    "",
+                    "EXTRACTED FACTS:",
+                    f"- Revenue: {quick_facts.get('revenue') or simple_meta.get('revenue') or 'Unknown'}",
+                    f"- Profit: {quick_facts.get('profit') or simple_meta.get('profit') or 'Unknown'}",
+                    f"- Debt: {quick_facts.get('debt') or simple_meta.get('debt') or 'Unknown'}",
+                    f"- Promoter mentioned: {checks.get('promoter_mentioned')}",
+                    "",
+                    "KEY HEURISTICS (SEBI CHECKS):",
+                    json.dumps(checks, indent=2),
+                    "",
+                    "DOCUMENT EXCERPT (truncated):",
+                    text[:16000],  # keep prompt bounded
+                    "",
+                    "OUTPUT FORMAT:\n1) A short title line\n2) 6-10 bullet points summarizing the most important items for an investor to scan (financials, governance, material risks, use of proceeds, promoter issues)\n3) One-sentence summary closing line.\n\nBe factual and concise."
+                ]
+                prompt = "\n".join(prompt_parts)
+                res = llm.invoke(prompt)
+                llm_summary = getattr(res, "content", str(res))
+            else:
+                llm_summary = "LLM not configured on server. Enable your LLM (GROQ_API_KEY / ChatGroq) to get a generated summary."
+        except Exception:
+            app_logger().exception("LLM summarization failed")
+            llm_summary = "LLM summarization failed or raised an error."
+
+        # 6) Compose final markdown for storing/display
+        md_body = md_header + md_quick + "## LLM Summary\n\n" + (llm_summary or "") + "\n\n---\n\n## SEBI Checks\n\n"
+        for k, v in checks.items():
+            md_body += f"- **{k}**: {v}\n"
+
+        # Optionally include a truncated excerpt for reference
+        md_body += "\n\n---\n\n## Extracted Text (truncated)\n\n" + text[:20_000]
+
+        # 7) Save to DB (use helper; it will filter unknown kwargs if you used defensive version)
+        try:
+            report_id = save_ipo_report_to_db(
+                user_id=current_user.id,
+                title=title,
+                filename=filename,
+                content_md=md_body,
+                raw_text=raw_text,
+                sebi_score=sebi_score,
+                sebi_checks=checks,
+                llm_score=None,
+                heuristic_meta=simple_meta,
+                checklist=checks,
+                overall_score=sebi_score
+            )
+        except Exception:
+            app_logger().exception("Failed to save IPO report")
+            return jsonify({"error": "failed to save report"}), 500
+
+        # 8) Return response
+        return jsonify({
+            "report_id": report_id,
+            "title": title,
+            "sebi_score": sebi_score,
+            "sebi_checks": checks,
+            "quick_facts": quick_facts,
+            "llm_summary": llm_summary,
+            "ipo_report_md": md_body[:10000]  # return only first 10k chars of markdown to keep response reasonable
+        })
+    except Exception:
+        app_logger().exception("Unexpected error in /ipo/analyze")
+        return jsonify({"error": "analysis failed"}), 500
+
+
+
+# -----------------------
+# IPO list / fetch endpoints (add near your IPO analyzer routes)
+# -----------------------
+from flask import abort
+
+@app.route("/ipo/list", methods=["GET"])
 @login_required
 def ipo_list():
-    rows = (IpoReport.query
-            .filter_by(user_id=current_user.id)
-            .order_by(IpoReport.created_at.desc())
-            .limit(200).all())
-    return jsonify({
-        "reports": [{
-            "id": r.id,
-            "title": r.title or f"Report #{r.id}",
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "sebi_score": r.sebi_score,
-            "llm_score": r.llm_score,
-        } for r in rows]
-    })
+    """
+    Return a list of IPO reports for the current user.
+    Frontend expects an array of { id, title, filename, created_at, overall_score, sebi_score, llm_score }.
+    """
+    try:
+        user_id = current_user.id
+        reports = list_user_ipo_reports(user_id)
+        return jsonify({"reports": reports})
+    except Exception:
+        logger.exception("Failed to list IPO reports")
+        return jsonify({"error": "failed to list reports"}), 500
 
-
-# @app.route('/ipo/get/<int:report_id>', methods=['GET'])
-# @login_required
-# def ipo_get(report_id):
-    
-#     r = IPOReport.query.get(report_id)
-#     if not r or r.user_id != current_user.id:
-#         return jsonify({'error': 'report not found'}), 404
-#     try:
-#         return jsonify({
-#             'id': r.id,
-#             'title': r.title,
-#             'created_at': r.created_at.isoformat() if r.created_at else None,
-#             'content_md': r.content_md,
-#             'heuristic_meta': json.loads(r.heuristic_meta or "{}"),
-#             'checklist': json.loads(r.checklist or "[]"),
-#             'overall_score': r.overall_score
-#         })
-#     except Exception:
-#         logger.exception("Failed to load IPO report")
-#         return jsonify({'error': 'Failed to load report'}), 500
-
-@app.get("/ipo/get/<int:rid>")
+@app.route("/ipo/get/<int:report_id>", methods=["GET"])
 @login_required
-def ipo_get(rid):
-    r = IpoReport.query.filter_by(id=rid, user_id=current_user.id).first()
-    if not r:
-        return jsonify(error="Not found"), 404
-    return jsonify({
-        "id": r.id,
-        "title": r.title,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "content_md": r.content_md,
-        "sebi_score": r.sebi_score,
-    })
+def ipo_get_report(report_id):
+    """
+    Return full report data for a single IPO report (markdown + metadata).
+    """
+    try:
+        rpt = IpoReport.query.filter_by(id=report_id, user_id=current_user.id).first()
+        if not rpt:
+            return jsonify({"error": "report not found"}), 404
+        try:
+            sebi_checks = rpt.sebi_checks if isinstance(rpt.sebi_checks, dict) else (json.loads(rpt.sebi_checks) if rpt.sebi_checks else {})
+        except Exception:
+            sebi_checks = rpt.sebi_checks
+        payload = {
+            "id": rpt.id,
+            "title": rpt.title,
+            "filename": rpt.filename,
+            "created_at": rpt.created_at.isoformat() if rpt.created_at else None,
+            "content_md": rpt.content_md,
+            "raw_text": rpt.raw_text,
+            "excerpt": getattr(rpt, "excerpt", None),
+            "overall_score": getattr(rpt, "overall_score", None),
+            "sebi_score": getattr(rpt, "sebi_score", None),
+            "llm_score": getattr(rpt, "llm_score", None),
+            "sebi_checks": sebi_checks,
+        }
+        return jsonify({"report": payload})
+    except Exception:
+        logger.exception("Failed to fetch IPO report %s", report_id)
+        return jsonify({"error": "failed to fetch report"}), 500
 
-
-
-
-# @app.route('/ipo/compare', methods=['GET'])
-# @login_required
-# def ipo_compare():
-#     ids_raw = request.args.get('ids', '')
-#     if not ids_raw:
-#         return jsonify({'error': 'ids query param required (comma-separated)'}), 400
-#     try:
-#         ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()]
-#     except Exception:
-#         return jsonify({'error': 'Invalid ids param'}), 400
-#     reports = IPOReport.query.filter(IPOReport.id.in_(ids), IPOReport.user_id == current_user.id).all()
-#     if not reports:
-#         return jsonify({'error': 'No reports found for given ids'}), 404
-#     cmp_rows = []
-#     for r in reports:
-#         try:
-#             meta = json.loads(r.heuristic_meta or "{}")
-#         except:
-#             meta = {}
-#         cmp_rows.append({
-#             'id': r.id,
-#             'title': r.title,
-#             'created_at': r.created_at.isoformat() if r.created_at else None,
-#             'revenue': meta.get('revenue'),
-#             'profit': meta.get('profit'),
-#             'debt': meta.get('debt'),
-#             'promoter_mentioned': meta.get('promoter_mentioned', False),
-#             'overall_score': r.overall_score
-#         })
-#     return jsonify({'comparison': cmp_rows})
 
 @app.get("/ipo/compare")
 @login_required

@@ -42,6 +42,7 @@ class Holding(db.Model):
 
     portfolio = db.relationship("Portfolio", back_populates="holdings")
 
+
 class IpoReport(db.Model):
     __tablename__ = "ipo_reports"
 
@@ -50,17 +51,31 @@ class IpoReport(db.Model):
 
     # What the UI shows
     title = db.Column(db.String(512), nullable=True)
-    content_md = db.Column(db.Text, nullable=False)   # markdown shown in the modal
-    raw_text = db.Column(db.Text, nullable=True)      # optional stored text
+    filename = db.Column(db.String(512), nullable=True)       # new: store uploaded filename if any
+    content_md = db.Column(db.Text, nullable=True)            # markdown shown in the modal
+    raw_text = db.Column(db.Text, nullable=True)              # optional stored text
+    excerpt = db.Column(db.String(512), nullable=True)
 
-    # For the list + compare UI
-    sebi_score = db.Column(db.Integer, nullable=True)
-    llm_score = db.Column(db.Integer, nullable=True)
+    # Scores & structured fields
+    overall_score = db.Column(db.Float, nullable=True)        # general overall score
+    sebi_score = db.Column(db.Integer, nullable=True)         # heuristic / SEBI checks score
+    llm_score = db.Column(db.Integer, nullable=True)          # optional LLM derived score
 
-    revenue = db.Column(db.String(128), nullable=True)
-    profit  = db.Column(db.String(128), nullable=True)
-    debt    = db.Column(db.String(128), nullable=True)
+    # Heuristic metadata
+    heuristic_meta = db.Column(db.Text, nullable=True)        # JSON/text of heuristics (stringified)
+    checklist = db.Column(db.Text, nullable=True)             # checklist (JSON/text)
+
+    # SEBI checks (store as JSON when DB supports it, else Text)
+    try:
+        # if the DB dialect supports JSON (Postgres), SQLAlchemy provides db.JSON
+        sebi_checks = db.Column(db.JSON, nullable=True)
+    except Exception:
+        sebi_checks = db.Column(db.Text, nullable=True)
+
+    # Quick-extracted financials (string versions kept for display)
+    revenue = db.Column(db.String(256), nullable=True)
+    profit  = db.Column(db.String(256), nullable=True)
+    debt    = db.Column(db.String(256), nullable=True)
     promoter_mentioned = db.Column(db.Boolean, default=False)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-

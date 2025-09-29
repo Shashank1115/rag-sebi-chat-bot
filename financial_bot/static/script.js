@@ -531,6 +531,33 @@
             scamQuestionEl.textContent = 'Failed to load question.';
         }
     }
+
+    // ------------------------------
+// IPO reports loader
+// ------------------------------
+async function loadIpoReports() {
+  try {
+    const res = await fetch('/ipo/list', { credentials: 'include' });
+    const j = await tryParseJsonResponse(res, '/ipo/list');
+    if (!j) return;
+    const container = document.querySelector('#ipo-reports-list'); // adjust to your HTML ID
+    if (!container) return;
+    container.innerHTML = '';
+    if (!j.reports || j.reports.length === 0) {
+      container.innerHTML = '<div class="text-gray-500 text-sm">No saved IPO reports yet.</div>';
+      return;
+    }
+    j.reports.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'p-2 border rounded bg-gray-50 mb-1';
+      div.innerHTML = `<strong>${r.title || 'Untitled IPO'}</strong> — SEBI Score: ${r.sebi_score ?? 'N/A'} | <a href="/ipo/get/${r.id}" target="_blank" class="text-indigo-600 text-xs hover:underline">View</a>`;
+      container.appendChild(div);
+    });
+  } catch (e) {
+    console.error('loadIpoReports error', e);
+  }
+}
+
     function checkScamAnswer(choice) {
         if (!currentScamQuestion) return;
         const isCorrect = choice.toLowerCase() === currentScamQuestion.type;
